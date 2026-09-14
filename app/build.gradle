@@ -12,8 +12,11 @@ android {
         applicationId 'com.nimchat.app'
         minSdk 26
         targetSdk 35
-        versionCode 3
-        versionName '0.3.0'
+        versionCode 4
+        versionName '0.4.0'
+
+        buildConfigField 'String', 'SUPABASE_URL', '"https://hqkreszsbkgptplyzkad.supabase.co"'
+        buildConfigField 'String', 'SUPABASE_KEY', '"sb_publishable_rh746ie553rTov-m4d1B2g_Kp58llQW"'
     }
 
     buildFeatures { buildConfig true }
@@ -24,9 +27,6 @@ android {
     }
 
     kotlinOptions { jvmTarget = '17' }
-
-    buildConfigField 'String', 'SUPABASE_URL', '"https://hqkreszsbkgptplyzkad.supabase.co"'
-    buildConfigField 'String', 'SUPABASE_KEY', '"YOUR_SUPABASE_PUBLISHABLE_KEY"'
 }
 
 dependencies {
