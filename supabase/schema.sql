@@ -42,8 +42,9 @@ grant select, insert, update on public.profiles to authenticated;
 grant select on public.conversations to authenticated;
 grant select on public.conversation_members to authenticated;
 grant select, insert, update, delete on public.messages to authenticated;
-revoke insert, update, delete on public.conversations from authenticated;
-revoke insert, update, delete on public.conversation_members from authenticated;
+revoke insert, update, delete, references, trigger, truncate on public.conversations from authenticated;
+revoke insert, update, delete, references, trigger, truncate on public.conversation_members from authenticated;
+revoke references, trigger, truncate on public.profiles, public.messages from authenticated;
 
 create or replace function private.is_conversation_member(target_conversation uuid, target_user uuid default auth.uid())
 returns boolean
