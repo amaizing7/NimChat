@@ -118,16 +118,12 @@ class MainActivity : Activity() {
         val root = base().apply { gravity = Gravity.CENTER_HORIZONTAL }
         root.addView(text("NimChat", 34f, true), lp())
         root.addView(text("پیام‌رسان سریع و ساده", 17f), lp(0, 10, 0, 22))
-        if (error != null) {
-            root.addView(text(error, 14f).apply { setTextColor(Color.rgb(180, 40, 40)) }, lp(0, 0, 0, 14))
-        }
+        if (error != null) root.addView(text(error, 14f).apply { setTextColor(Color.rgb(180, 40, 40)) }, lp(0, 0, 0, 14))
         val name = input("نام کاربری (a-z, 0-9, _)")
         root.addView(name, lp(-1, 0, 0, 12))
         val enter = button("ورود به NimChat")
         root.addView(enter, lp(-1, 0, 0, 8))
-        val help = text("این نسخه برای ساخت حساب اولیه از ورود مهمان Supabase استفاده می‌کند.\nاگر ورود مهمان غیرفعال باشد، خطای دقیق همین‌جا نمایش داده می‌شود.", 12f)
-        help.setTextColor(Color.DKGRAY)
-        root.addView(help, lp(0, 10, 0, 0))
+        root.addView(text("این نسخه برای ساخت حساب اولیه از ورود مهمان Supabase استفاده می‌کند.\nاگر ورود مهمان غیرفعال باشد، خطای دقیق همین‌جا نمایش داده می‌شود.", 12f).apply { setTextColor(Color.DKGRAY) }, lp(0, 10, 0, 0))
 
         enter.setOnClickListener {
             val username = name.text.toString().trim().lowercase(Locale.ROOT)
@@ -144,9 +140,7 @@ class MainActivity : Activity() {
                         supabase.from("profiles").select { filter { eq("id", uid) } }.decodeSingleOrNull<Profile>()
                     }
                     if (existing == null) {
-                        withTimeout(10000) {
-                            supabase.from("profiles").insert(Profile(uid, username, username))
-                        }
+                        withTimeout(10000) { supabase.from("profiles").insert(Profile(uid, username, username)) }
                     } else if (existing.username != username) {
                         throw IllegalStateException("این حساب قبلاً با نام کاربری ${existing.username} ثبت شده است")
                     }
@@ -170,8 +164,7 @@ class MainActivity : Activity() {
             return cached
         }
         withTimeout(12000) { supabase.auth.signInAnonymously() }
-        return supabase.auth.currentUserOrNull()?.id
-            ?: throw IllegalStateException("Supabase احراز هویت را انجام نداد")
+        return supabase.auth.currentUserOrNull()?.id ?: throw IllegalStateException("Supabase احراز هویت را انجام نداد")
     }
 
     private fun loadExistingProfile() {
@@ -252,21 +245,15 @@ class MainActivity : Activity() {
         listScroll.addView(list)
         root.addView(listScroll, LinearLayout.LayoutParams(-1, 0, 1f))
         setContentView(root)
-
         scope.launch { loadConversations(list) }
     }
 
     private suspend fun loadConversations(list: LinearLayout) {
         try {
-            val rows = withTimeout(12000) {
-                supabase.postgrest.rpc("list_my_conversations").decodeList<ConversationSummary>()
-            }
+            val rows = withTimeout(12000) { supabase.postgrest.rpc("list_my_conversations").decodeList<ConversationSummary>() }
             list.removeAllViews()
             if (rows.isEmpty()) {
-                list.addView(text("هنوز گفتگویی نداری.\nبالا نام کاربری یک نفر را وارد کن.", 15f).apply {
-                    setTextColor(Color.GRAY)
-                    setPadding(8, 22, 8, 22)
-                })
+                list.addView(text("هنوز گفتگویی نداری.\nبالا نام کاربری یک نفر را وارد کن.", 15f).apply { setTextColor(Color.GRAY); setPadding(8, 22, 8, 22) })
                 return
             }
             rows.forEach { row ->
@@ -279,9 +266,7 @@ class MainActivity : Activity() {
                 item.addView(text(row.other_display_name?.takeIf { it.isNotBlank() } ?: row.other_username, 17f, true))
                 val preview = row.last_message?.replace("\n", " ") ?: "هنوز پیامی ارسال نشده"
                 item.addView(text(preview.take(80), 14f).apply { setTextColor(Color.DKGRAY) }, lp(-1, 4, 0, 0))
-                row.last_message_at?.let {
-                    item.addView(text(formatTime(it), 11f).apply { setTextColor(Color.GRAY) }, lp(-1, 4, 0, 0))
-                }
+                row.last_message_at?.let { item.addView(text(formatTime(it), 11f).apply { setTextColor(Color.GRAY) }, lp(-1, 4, 0, 0)) }
                 item.setOnClickListener {
                     activeConversation = row.conversation_id
                     chatUser = row.other_username
@@ -291,9 +276,7 @@ class MainActivity : Activity() {
             }
         } catch (e: Exception) {
             list.removeAllViews()
-            list.addView(text("بارگذاری گفتگوها ناموفق بود:\n${friendlyError(e)}", 14f).apply {
-                setTextColor(Color.rgb(180, 40, 40))
-            })
+            list.addView(text("بارگذاری گفتگوها ناموفق بود:\n${friendlyError(e)}", 14f).apply { setTextColor(Color.rgb(180, 40, 40)) })
         }
     }
 
@@ -311,10 +294,7 @@ class MainActivity : Activity() {
         root.addView(header, lp(-1, 0, 0, 10))
 
         val scroll = ScrollView(this)
-        val list = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(4, 8, 4, 8)
-        }
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(4, 8, 4, 8) }
         scroll.addView(list)
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
 
@@ -326,40 +306,23 @@ class MainActivity : Activity() {
         root.addView(composer, lp(-1, 8, 0, 0))
         setContentView(root)
 
-        send.setOnClickListener {
-            sendMessage(conversationId, messageInput, send, list, scroll)
-        }
+        send.setOnClickListener { sendMessage(conversationId, messageInput, send, list, scroll) }
         messageInput.setOnEditorActionListener { _, actionId, _ ->
-            if (actionId == EditorInfo.IME_ACTION_DONE) {
-                send.performClick()
-                true
-            } else false
+            if (actionId == EditorInfo.IME_ACTION_DONE) { send.performClick(); true } else false
         }
-
         scope.launch { refreshMessages(conversationId, list, scroll) }
         startChatRealtime(conversationId, list, scroll)
     }
 
-    private fun sendMessage(
-        conversationId: String,
-        input: EditText,
-        send: Button,
-        list: LinearLayout,
-        scroll: ScrollView
-    ) {
+    private fun sendMessage(conversationId: String, input: EditText, send: Button, list: LinearLayout, scroll: ScrollView) {
         val value = input.text.toString().trim()
         if (value.isEmpty()) return
-        if (value.length > 4000) {
-            input.error = "حداکثر ۴۰۰۰ کاراکتر"
-            return
-        }
+        if (value.length > 4000) { input.error = "حداکثر ۴۰۰۰ کاراکتر"; return }
         send.isEnabled = false
         scope.launch {
             try {
                 val me = currentUser ?: throw IllegalStateException("جلسه کاربر وجود ندارد")
-                withTimeout(10000) {
-                    supabase.from("messages").insert(Message(conversation_id = conversationId, sender_id = me, body = value))
-                }
+                withTimeout(10000) { supabase.from("messages").insert(Message(conversation_id = conversationId, sender_id = me, body = value)) }
                 input.text.clear()
                 refreshMessages(conversationId, list, scroll)
             } catch (e: Exception) {
@@ -373,14 +336,9 @@ class MainActivity : Activity() {
             try {
                 supabase.realtime.connect()
                 val channel = supabase.realtime.channel("messages-$conversationId")
-                val changes = channel.postgresChangeFlow<PostgresAction.Insert>(schema = "public") {
-                    table = "messages"
-                    filter(io.github.jan.supabase.postgrest.query.filter.FilterOperation("conversation_id", io.github.jan.supabase.postgrest.query.filter.FilterOperator.EQ, conversationId))
-                }
+                val changes = channel.postgresChangeFlow<PostgresAction.Insert>(schema = "public") { table = "messages" }
                 channel.subscribe()
-                changes.collect {
-                    refreshMessages(conversationId, list, scroll)
-                }
+                changes.collect { refreshMessages(conversationId, list, scroll) }
             } catch (_: Exception) {
                 // Polling fallback below remains active if Realtime is unavailable.
             }
@@ -419,10 +377,7 @@ class MainActivity : Activity() {
 
     private fun addBubble(parent: LinearLayout, message: Message) {
         val mine = message.sender_id == currentUser
-        val row = LinearLayout(this).apply {
-            gravity = if (mine) Gravity.END else Gravity.START
-            setPadding(4, 4, 4, 4)
-        }
+        val row = LinearLayout(this).apply { gravity = if (mine) Gravity.END else Gravity.START; setPadding(4, 4, 4, 4) }
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(16, 10, 16, 8)
@@ -441,16 +396,13 @@ class MainActivity : Activity() {
             val source = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSSSSXXX", Locale.US)
             val date: Date = source.parse(value) ?: return value.take(16)
             SimpleDateFormat("HH:mm", Locale.getDefault()).format(date)
-        } catch (_: Exception) {
-            value.replace("T", " ").take(16)
-        }
+        } catch (_: Exception) { value.replace("T", " ").take(16) }
     }
 
     private fun friendlyError(error: Throwable): String {
         val raw = error.message.orEmpty()
         return when {
-            raw.contains("Anonymous", true) && (raw.contains("disabled", true) || raw.contains("not enabled", true)) ->
-                "ورود مهمان Supabase فعال نیست. تا فعال نشود، ورود کار نمی‌کند."
+            raw.contains("Anonymous", true) && (raw.contains("disabled", true) || raw.contains("not enabled", true)) -> "ورود مهمان Supabase فعال نیست. تا فعال نشود، ورود کار نمی‌کند."
             raw.contains("invalid_target", true) -> "کاربر مقصد معتبر نیست."
             raw.contains("user_not_found", true) -> "این کاربر پیدا نشد."
             raw.contains("not_authenticated", true) -> "جلسه احراز هویت وجود ندارد. دوباره وارد شو."
@@ -462,7 +414,5 @@ class MainActivity : Activity() {
     }
 
     private fun lp(w: Int = -1, top: Int = 0, bottom: Int = 0, left: Int = 0): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(w, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            setMargins(left, top, 0, bottom)
-        }
+        LinearLayout.LayoutParams(w, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(left, top, 0, bottom) }
 }
