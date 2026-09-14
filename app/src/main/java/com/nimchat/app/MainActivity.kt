@@ -25,7 +25,7 @@ import kotlinx.serialization.Serializable
 data class Profile(val id: String, val username: String, val display_name: String? = null)
 
 @Serializable
-data class Conversation(val id: String? = null)
+data class Conversation(val id: String? = null, val created_by: String)
 
 @Serializable
 data class Member(val conversation_id: String, val user_id: String)
@@ -70,9 +70,7 @@ class MainActivity : Activity() {
             try {
                 val uid = currentUser ?: return@launch
                 val profile = withTimeout(8000) {
-                    supabase.from("profiles").select {
-                        filter { eq("id", uid) }
-                    }.decodeSingleOrNull<Profile>()
+                    supabase.from("profiles").select { filter { eq("id", uid) } }.decodeSingleOrNull<Profile>()
                 }
                 if (profile != null) {
                     currentUsername = profile.username
@@ -134,14 +132,14 @@ class MainActivity : Activity() {
                 try {
                     var uid = currentUser
                     if (uid == null) {
-                        withTimeout(10000) {
-                            supabase.auth.signInAnonymously()
-                        }
+                        withTimeout(10000) { supabase.auth.signInAnonymously() }
                         uid = supabase.auth.currentUserOrNull()?.id
                     }
                     if (uid == null) throw IllegalStateException("احراز هویت انجام نشد")
                     currentUser = uid
-                    supabase.from("profiles").insert(Profile(uid, username, username))
+                    withTimeout(8000) {
+                        supabase.from("profiles").insert(Profile(uid, username, username))
+                    }
                     currentUsername = username
                     showHome()
                 } catch (e: Exception) {
@@ -183,7 +181,11 @@ class MainActivity : Activity() {
                 search.error = "نام کاربری را وارد کن"
                 return@setOnClickListener
             }
-            scope.launch { openConversation(username) }
+            start.isEnabled = false
+            scope.launch {
+                try { openConversation(username) }
+                finally { start.isEnabled = true }
+            }
         }
         root.addView(text("پیام‌رسانی", 18f, true), lp(0, 0, 0, 8))
         root.addView(text("پیام‌ها اکنون در دیتابیس Supabase ذخیره می‌شوند.", 14f), lp())
@@ -192,21 +194,26 @@ class MainActivity : Activity() {
 
     private suspend fun openConversation(targetUsername: String) {
         try {
-            val target = supabase.from("profiles").select {
-                filter { eq("username", targetUsername) }
-            }.decodeSingleOrNull<Profile>()
+            val target = withTimeout(8000) {
+                supabase.from("profiles").select { filter { eq("username", targetUsername) } }.decodeSingleOrNull<Profile>()
+            }
             if (target == null) {
                 Toast.makeText(this, "این کاربر پیدا نشد.", Toast.LENGTH_SHORT).show()
                 return
             }
-            if (target.id == currentUser) {
+            val me = currentUser ?: throw IllegalStateException("جلسه کاربر وجود ندارد")
+            if (target.id == me) {
                 Toast.makeText(this, "نام کاربری خودت را وارد نکن.", Toast.LENGTH_SHORT).show()
                 return
             }
-            val conversation = supabase.from("conversations").insert(Conversation()) { select() }.decodeSingle<Conversation>()
-            val conversationId = conversation.id ?: return
-            supabase.from("conversation_members").insert(Member(conversationId, currentUser!!))
-            supabase.from("conversation_members").insert(Member(conversationId, target.id))
+            val conversation = withTimeout(8000) {
+                supabase.from("conversations").insert(Conversation(created_by = me)) { select() }.decodeSingle<Conversation>()
+            }
+            val conversationId = conversation.id ?: throw IllegalStateException("شناسه گفتگو ساخته نشد")
+            withTimeout(8000) {
+                supabase.from("conversation_members").insert(Member(conversationId, me))
+                supabase.from("conversation_members").insert(Member(conversationId, target.id))
+            }
             activeConversation = conversationId
             chatUser = target.username
             showChat()
@@ -242,25 +249,29 @@ class MainActivity : Activity() {
         send.setOnClickListener {
             val value = messageInput.text.toString().trim()
             if (value.isEmpty()) return@setOnClickListener
+            send.isEnabled = false
             scope.launch {
                 try {
-                    val message = Message(conversation_id = conversationId, sender_id = currentUser!!, body = value)
-                    supabase.from("messages").insert(message)
+                    val me = currentUser ?: throw IllegalStateException("جلسه کاربر وجود ندارد")
+                    val message = Message(conversation_id = conversationId, sender_id = me, body = value)
+                    withTimeout(8000) { supabase.from("messages").insert(message) }
                     addBubble(list, value, true)
                     messageInput.text.clear()
                     scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
                 } catch (e: Exception) {
                     Toast.makeText(this@MainActivity, "ارسال ناموفق: ${e.message ?: "خطا"}", Toast.LENGTH_SHORT).show()
-                }
+                } finally { send.isEnabled = true }
             }
         }
         setContentView(root)
         scope.launch {
             try {
-                val messages = supabase.from("messages").select {
-                    filter { eq("conversation_id", conversationId) }
-                    order("created_at", Order.ASCENDING)
-                }.decodeList<Message>()
+                val messages = withTimeout(8000) {
+                    supabase.from("messages").select {
+                        filter { eq("conversation_id", conversationId) }
+                        order("created_at", Order.ASCENDING)
+                    }.decodeList<Message>()
+                }
                 messages.forEach { addBubble(list, it.body, it.sender_id == currentUser) }
                 scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
             } catch (_: Exception) {
