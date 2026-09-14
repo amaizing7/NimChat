@@ -56,6 +56,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        showLoading()
         scope.launch {
             try {
                 var user = supabase.auth.currentUserOrNull()
@@ -73,6 +74,15 @@ class MainActivity : Activity() {
                 showAuth("اتصال Supabase برقرار نشد: ${e.message ?: "خطای نامشخص"}")
             }
         }
+    }
+
+    private fun showLoading() {
+        val root = base().apply { gravity = Gravity.CENTER_HORIZONTAL }
+        root.addView(text("NimChat", 34f, true), lp())
+        root.addView(text("در حال اتصال به سرور...", 17f), lp(0, 12, 0, 20))
+        val progress = ProgressBar(this)
+        root.addView(progress, lp(-2, 0, 0, 0))
+        setContentView(root)
     }
 
     private fun base(): LinearLayout = LinearLayout(this).apply {
@@ -122,12 +132,14 @@ class MainActivity : Activity() {
             }
             scope.launch {
                 try {
-                    val uid = currentUser ?: return@launch
+                    val uid = currentUser ?: run {
+                        name.error = "اتصال هنوز آماده نیست"
+                        return@launch
+                    }
                     supabase.from("profiles").insert(Profile(uid, username, username))
                     currentUsername = username
                     showHome()
                 } catch (e: Exception) {
-                    // Existing profile is fine; any other error is shown.
                     try {
                         val profile = supabase.from("profiles").select {
                             filter { eq("id", currentUser ?: "") }
@@ -140,7 +152,7 @@ class MainActivity : Activity() {
                 }
             }
         }
-        root.addView(text("نسخه 0.3 • اتصال واقعی به Supabase", 13f).apply { setTextColor(Color.GRAY) }, lp(0, 20, 0, 0))
+        root.addView(text("نسخه 0.4 • اتصال واقعی به Supabase", 13f).apply { setTextColor(Color.GRAY) }, lp(0, 20, 0, 0))
         setContentView(root)
     }
 
@@ -259,7 +271,7 @@ class MainActivity : Activity() {
                 }.decodeList<Message>()
                 messages.forEach { addBubble(list, it.body, it.sender_id == currentUser) }
                 scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 Toast.makeText(this@MainActivity, "خواندن پیام‌ها ناموفق بود", Toast.LENGTH_SHORT).show()
             }
         }
