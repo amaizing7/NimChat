@@ -28,10 +28,14 @@ create table if not exists public.messages (
   sender_id uuid not null references auth.users(id) on delete cascade,
   body text not null check (char_length(trim(body)) between 1 and 4000),
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  read_at timestamptz
 );
 
+alter table public.messages add column if not exists read_at timestamptz;
+
 create index if not exists messages_conversation_created_idx on public.messages(conversation_id, created_at);
+create index if not exists messages_unread_idx on public.messages(conversation_id, sender_id, read_at) where read_at is null;
 create index if not exists conversation_members_user_idx on public.conversation_members(user_id);
 
 create or replace function public.set_message_updated_at()
@@ -152,6 +156,28 @@ as $$
 $$;
 revoke all on function public.list_my_conversations() from public;
 grant execute on function public.list_my_conversations() to authenticated;
+
+create or replace function public.mark_conversation_read(target_conversation uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then raise exception 'not_authenticated'; end if;
+  if not private.is_conversation_member(target_conversation, auth.uid()) then
+    raise exception 'not_conversation_member';
+  end if;
+
+  update public.messages
+  set read_at = coalesce(read_at, now())
+  where conversation_id = target_conversation
+    and sender_id <> auth.uid()
+    and read_at is null;
+end;
+$$;
+revoke all on function public.mark_conversation_read(uuid) from public;
+grant execute on function public.mark_conversation_read(uuid) to authenticated;
 
 do $$
 begin
