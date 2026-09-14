@@ -10,6 +10,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.*
 import android.view.inputmethod.EditorInfo
 import android.widget.*
@@ -83,6 +85,7 @@ class NimChatActivity : Activity() {
     private var homeRt: Job? = null
     private var fallback: Job? = null
     private var pendingFileCid: String? = null
+    private var cachedConversations: List<NCConversation> = emptyList()
     private val pickFile = 1001
     private val channelId = "nimchat_messages"
 
@@ -201,13 +204,14 @@ class NimChatActivity : Activity() {
                 try { withTimeout(5000) { ncSupabase.auth.signOut() } } catch (_: Exception) {}
                 uid = null
                 username = ""
+                cachedConversations = emptyList()
                 showAuth()
             }
         }
         header.addView(logout)
         root.addView(header, lp(-1, 0, 10))
         root.addView(t("سلام $username 👋", 19f, true), lp(-1, 0, 10))
-        val search = inp("نام کاربری برای شروع گفتگو")
+        val search = inp("جستجوی گفتگو یا نام کاربری")
         root.addView(search, lp(-1, 0, 8))
         val start = btn("＋ شروع گفتگوی جدید")
         root.addView(start, lp(-1, 0, 14))
@@ -219,6 +223,13 @@ class NimChatActivity : Activity() {
         root.addView(sv, LinearLayout.LayoutParams(-1, 0, 1f))
         list = conversationList
         setContentView(root)
+        search.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                renderConversations(conversationList, s?.toString().orEmpty())
+            }
+            override fun afterTextChanged(s: Editable?) = Unit
+        })
         scope.launch { loadConversations(conversationList) }
         startHomeRealtime()
     }
@@ -253,43 +264,53 @@ class NimChatActivity : Activity() {
 
     private suspend fun loadConversations(container: LinearLayout) {
         try {
-            val rows = withTimeout(12000) {
+            cachedConversations = withTimeout(12000) {
                 ncSupabase.postgrest.rpc("list_my_conversations").decodeList<NCConversation>()
             }
-            container.removeAllViews()
-            if (rows.isEmpty()) {
-                container.addView(t("هنوز گفتگویی نداری.", 15f).apply { setTextColor(Color.GRAY) }, lp(-1, 10, 0))
-                return
-            }
-            rows.forEach { row ->
-                val item = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    setPadding(14, 12, 14, 12)
-                    setBackgroundColor(Color.WHITE)
-                    isClickable = true
-                }
-                val top = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-                top.addView(t(row.other_display_name?.takeIf { it.isNotBlank() } ?: row.other_username, 17f, true), LinearLayout.LayoutParams(0, -2, 1f))
-                if (row.unread_count > 0) {
-                    top.addView(t(" ${row.unread_count} ", 13f, true).apply {
-                        setTextColor(Color.WHITE)
-                        setBackgroundColor(Color.rgb(35, 110, 210))
-                        setPadding(8, 3, 8, 3)
-                    })
-                }
-                item.addView(top)
-                item.addView(t(row.last_message?.replace("\n", " ")?.take(80) ?: "هنوز پیامی ارسال نشده", 14f).apply { setTextColor(Color.DKGRAY) }, lp(-1, 4, 0))
-                row.last_message_at?.let { item.addView(t(formatTime(it), 11f).apply { setTextColor(Color.GRAY) }, lp(-1, 4, 0)) }
-                item.setOnClickListener {
-                    activeCid = row.conversation_id
-                    chatUser = row.other_username
-                    showChat()
-                }
-                container.addView(item, lp(-1, 0, 8))
-            }
+            renderConversations(container, "")
         } catch (e: Exception) {
             container.removeAllViews()
             container.addView(t("بارگذاری ناموفق: ${friendly(e)}", 14f).apply { setTextColor(Color.RED) })
+        }
+    }
+
+    private fun renderConversations(container: LinearLayout, rawQuery: String) {
+        val query = rawQuery.trim().lowercase(Locale.ROOT)
+        val rows = cachedConversations.filter { row ->
+            query.isBlank() || row.other_username.lowercase(Locale.ROOT).contains(query) ||
+                row.other_display_name.orEmpty().lowercase(Locale.ROOT).contains(query) ||
+                row.last_message.orEmpty().lowercase(Locale.ROOT).contains(query)
+        }
+        container.removeAllViews()
+        if (rows.isEmpty()) {
+            container.addView(t(if (query.isBlank()) "هنوز گفتگویی نداری." else "نتیجه‌ای پیدا نشد", 15f).apply { setTextColor(Color.GRAY) }, lp(-1, 10, 0))
+            return
+        }
+        rows.forEach { row ->
+            val item = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(14, 12, 14, 12)
+                setBackgroundColor(Color.WHITE)
+                isClickable = true
+            }
+            val top = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+            top.addView(t(row.other_display_name?.takeIf { it.isNotBlank() } ?: row.other_username, 17f, true), LinearLayout.LayoutParams(0, -2, 1f))
+            if (row.unread_count > 0) {
+                top.addView(t(" ${row.unread_count} ", 13f, true).apply {
+                    setTextColor(Color.WHITE)
+                    setBackgroundColor(Color.rgb(35, 110, 210))
+                    setPadding(8, 3, 8, 3)
+                })
+            }
+            item.addView(top)
+            item.addView(t(row.last_message?.replace("\n", " ")?.take(80) ?: "هنوز پیامی ارسال نشده", 14f).apply { setTextColor(Color.DKGRAY) }, lp(-1, 4, 0))
+            row.last_message_at?.let { item.addView(t(formatTime(it), 11f).apply { setTextColor(Color.GRAY) }, lp(-1, 4, 0)) }
+            item.setOnClickListener {
+                activeCid = row.conversation_id
+                chatUser = row.other_username
+                showChat()
+            }
+            container.addView(item, lp(-1, 0, 8))
         }
     }
 
@@ -397,7 +418,7 @@ class NimChatActivity : Activity() {
             setBackgroundColor(if (mine) Color.rgb(220, 235, 255) else Color.WHITE)
         }
         if (!message.body.isNullOrBlank()) box.addView(t(message.body.orEmpty(), 16f))
-        message.attachment_path?.let { path ->
+        message.attachment_path?.let {
             val fileButton = btn("📎 ${message.attachment_name ?: "فایل"}")
             fileButton.setOnClickListener { openAttachment(message) }
             box.addView(fileButton, lp(-1, 5, 0))
@@ -489,6 +510,7 @@ class NimChatActivity : Activity() {
     }
 
     private suspend fun uploadAttachment(cid: String, uri: Uri) {
+        var uploadedPath: String? = null
         try {
             val resolver = contentResolver
             val size = resolver.query(uri, null, null, null, null)?.use { cursor ->
@@ -501,25 +523,17 @@ class NimChatActivity : Activity() {
             val name = queryDisplayName(uri) ?: "file"
             val mime = resolver.getType(uri) ?: "application/octet-stream"
             val me = uid ?: error("جلسه وجود ندارد")
-            val path = "$me/${UUID.randomUUID()}-${name.replace(Regex("[^A-Za-z0-9._-]"), "_")}" 
-            withContext(Dispatchers.IO) {
-                ncSupabase.storage.from("chat-files").upload(path, bytes)
-            }
+            val path = "$me/${UUID.randomUUID()}-${name.replace(Regex("[^A-Za-z0-9._-]"), "_")}"
+            withContext(Dispatchers.IO) { ncSupabase.storage.from("chat-files").upload(path, bytes) }
+            uploadedPath = path
             withTimeout(10000) {
-                ncSupabase.from("messages").insert(
-                    NCMessage(
-                        conversation_id = cid,
-                        sender_id = me,
-                        body = null,
-                        attachment_path = path,
-                        attachment_name = name,
-                        attachment_mime = mime,
-                        attachment_size = bytes.size.toLong()
-                    )
-                )
+                ncSupabase.from("messages").insert(NCMessage(conversation_id = cid, sender_id = me, body = null, attachment_path = path, attachment_name = name, attachment_mime = mime, attachment_size = bytes.size.toLong()))
             }
             refreshMessages(cid)
         } catch (e: Exception) {
+            uploadedPath?.let { path ->
+                try { withContext(Dispatchers.IO) { ncSupabase.storage.from("chat-files").delete(path) } } catch (_: Exception) {}
+            }
             Toast.makeText(this@NimChatActivity, "ارسال فایل ناموفق: ${friendly(e)}", Toast.LENGTH_LONG).show()
         }
     }
@@ -537,14 +551,9 @@ class NimChatActivity : Activity() {
                 val file = File(cacheDir, message.attachment_name ?: "attachment")
                 file.writeBytes(bytes)
                 val uri = FileProvider.getUriForFile(this@NimChatActivity, "${BuildConfig.APPLICATION_ID}.fileprovider", file)
-                val intent = Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(uri, message.attachment_mime ?: "application/octet-stream")
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
+                val intent = Intent(Intent.ACTION_VIEW).apply { setDataAndType(uri, message.attachment_mime ?: "application/octet-stream"); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }
                 startActivity(intent)
-            } catch (e: Exception) {
-                Toast.makeText(this@NimChatActivity, "باز کردن فایل ناموفق: ${friendly(e)}", Toast.LENGTH_LONG).show()
-            }
+            } catch (e: Exception) { Toast.makeText(this@NimChatActivity, "باز کردن فایل ناموفق: ${friendly(e)}", Toast.LENGTH_LONG).show() }
         }
     }
 
@@ -554,24 +563,14 @@ class NimChatActivity : Activity() {
                 val id = uid ?: return@launch
                 val current = withTimeout(10000) { ncSupabase.from("profiles").select { filter { eq("id", id) } }.decodeSingleOrNull<NCProfile>() }
                 val field = inp("نام نمایشی").apply { setText(current?.display_name ?: username) }
-                AlertDialog.Builder(this@NimChatActivity)
-                    .setTitle("پروفایل")
-                    .setView(field)
-                    .setNegativeButton("لغو", null)
-                    .setPositiveButton("ذخیره") { _, _ ->
-                        val value = field.text.toString().trim()
-                        scope.launch {
-                            try {
-                                ncSupabase.from("profiles").update({ set("display_name", value.ifBlank { null }) }) { filter { eq("id", id) } }
-                                showHome()
-                            } catch (e: Exception) {
-                                Toast.makeText(this@NimChatActivity, friendly(e), Toast.LENGTH_LONG).show()
-                            }
-                        }
-                    }.show()
-            } catch (e: Exception) {
-                Toast.makeText(this@NimChatActivity, friendly(e), Toast.LENGTH_LONG).show()
-            }
+                AlertDialog.Builder(this@NimChatActivity).setTitle("پروفایل").setView(field).setNegativeButton("لغو", null).setPositiveButton("ذخیره") { _, _ ->
+                    val value = field.text.toString().trim()
+                    scope.launch {
+                        try { ncSupabase.from("profiles").update({ set("display_name", value.ifBlank { null }) }) { filter { eq("id", id) } }; showHome() }
+                        catch (e: Exception) { Toast.makeText(this@NimChatActivity, friendly(e), Toast.LENGTH_LONG).show() }
+                    }
+                }.show()
+            } catch (e: Exception) { Toast.makeText(this@NimChatActivity, friendly(e), Toast.LENGTH_LONG).show() }
         }
     }
 
@@ -603,13 +602,7 @@ class NimChatActivity : Activity() {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2001)
             return
         }
-        val notification = NotificationCompat.Builder(this, channelId)
-            .setSmallIcon(android.R.drawable.ic_dialog_email)
-            .setContentTitle("NimChat")
-            .setContentText(body)
-            .setAutoCancel(true)
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-            .build()
+        val notification = NotificationCompat.Builder(this, channelId).setSmallIcon(android.R.drawable.ic_dialog_email).setContentTitle("NimChat").setContentText(body).setAutoCancel(true).setPriority(NotificationCompat.PRIORITY_DEFAULT).build()
         try { NotificationManagerCompat.from(this).notify(conversation.hashCode(), notification) } catch (_: SecurityException) {}
     }
 
@@ -626,8 +619,7 @@ class NimChatActivity : Activity() {
     }
 
     private fun stopAll() {
-        stopChatOnly()
-        homeRt?.cancel(); homeRt = null
+        stopChatOnly(); homeRt?.cancel(); homeRt = null
         try { ncSupabase.realtime.removeAllChannels() } catch (_: Exception) {}
     }
 
