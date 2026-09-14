@@ -7,6 +7,7 @@ import io.github.jan.supabase.postgrest.result.PostgrestResult
 import io.github.jan.supabase.postgrest.query.filter.FilterOperation
 import io.github.jan.supabase.postgrest.query.filter.FilterOperator
 import io.github.jan.supabase.realtime.PostgresAction
+import io.github.jan.supabase.realtime.PostgresChangeFilter
 import io.github.jan.supabase.realtime.Realtime
 import io.github.jan.supabase.realtime.RealtimeChannel
 import io.github.jan.supabase.realtime.channel as officialChannel
@@ -61,4 +62,9 @@ inline fun <reified T : PostgresAction> RealtimeChannel.postgresChangeFlow(
         this.table = table
         operation?.let { this.filter(it) }
     }
+}
+
+fun PostgresChangeFilter.filter(builder: NimChatRealtimeFilter.() -> Unit) {
+    val spec = NimChatRealtimeFilter().apply(builder).build().second
+    spec?.let { this.filter(it) }
 }
