@@ -23,19 +23,31 @@ class NimChatCoreContractTest {
     }
 
     @Test
-    fun message_contract_round_trips_id_and_edit_metadata() {
+    fun message_contract_round_trips_id_edit_and_read_metadata() {
         val original = Message(
             id = "00000000-0000-0000-0000-000000000001",
             conversation_id = "00000000-0000-0000-0000-000000000002",
             sender_id = "00000000-0000-0000-0000-000000000003",
             body = "hello NimChat",
             created_at = "2026-09-14T22:00:00.000000Z",
-            updated_at = "2026-09-14T22:01:00.000000Z"
+            updated_at = "2026-09-14T22:01:00.000000Z",
+            read_at = "2026-09-14T22:02:00.000000Z"
         )
         val json = Json.encodeToString(original)
         val restored = Json.decodeFromString<Message>(json)
         assertEquals(original, restored)
         assertTrue(restored.updated_at != restored.created_at)
+        assertTrue(restored.read_at != null)
+    }
+
+    @Test
+    fun unread_message_contract_allows_missing_read_timestamp() {
+        val message = Message(
+            conversation_id = "00000000-0000-0000-0000-000000000002",
+            sender_id = "00000000-0000-0000-0000-000000000003",
+            body = "unread"
+        )
+        assertEquals(null, message.read_at)
     }
 
     @Test
