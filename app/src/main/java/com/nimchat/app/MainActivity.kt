@@ -375,7 +375,7 @@ class MainActivity : Activity() {
                 val channel = supabase.realtime.channel("messages-$conversationId")
                 val changes = channel.postgresChangeFlow<PostgresAction.Insert>(schema = "public") {
                     table = "messages"
-                    filter { eq("conversation_id", conversationId) }
+                    filter(io.github.jan.supabase.postgrest.query.filter.FilterOperation("conversation_id", io.github.jan.supabase.postgrest.query.filter.FilterOperator.EQ, conversationId))
                 }
                 channel.subscribe()
                 changes.collect {
