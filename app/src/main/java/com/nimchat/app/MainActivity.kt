@@ -19,6 +19,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
@@ -67,7 +68,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         messageRefreshJob?.cancel()
-        scope.coroutineContext[SupervisorJob]?.cancel()
+        scope.cancel()
         super.onDestroy()
     }
 
@@ -292,14 +293,14 @@ class MainActivity : Activity() {
             messages.forEach { addBubble(list, it.body, it.sender_id == currentUser) }
             scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
         } catch (_: Exception) {
-            // A temporary network failure is retried by the next refresh cycle.
+            // Temporary network failure; the next cycle retries automatically.
         }
     }
 
     private fun addBubble(parent: LinearLayout, value: String, mine: Boolean) {
         val row = LinearLayout(this).apply {
             gravity = if (mine) Gravity.END else Gravity.START
-            setPadding(4, 5, 4, 5
+            setPadding(4, 5, 4, 5)
         }
         val bubble = text(value, 16f).apply {
             setPadding(18, 12, 18, 12)
@@ -312,7 +313,7 @@ class MainActivity : Activity() {
     private fun friendlyError(message: String?): String {
         val m = message ?: return "خطای نامشخص"
         return when {
-            m.contains("Anonymous", true) || m.contains("anonymous", true) -> "ورود مهمان در Supabase فعال نیست."
+            m.contains("Anonymous", true) -> "ورود مهمان در Supabase فعال نیست."
             m.contains("duplicate", true) || m.contains("unique", true) -> "این نام کاربری قبلاً ثبت شده است."
             m.contains("timeout", true) || m.contains("timed out", true) -> "اتصال به سرور زمان‌بر شد. دوباره تلاش کن."
             else -> m.take(180)
