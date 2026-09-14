@@ -51,6 +51,23 @@ class NimChatCoreContractTest {
     }
 
     @Test
+    fun attachment_message_contract_round_trips_file_metadata() {
+        val original = NCMessage(
+            conversation_id = "00000000-0000-0000-0000-000000000002",
+            sender_id = "00000000-0000-0000-0000-000000000003",
+            body = null,
+            attachment_path = "00000000-0000-0000-0000-000000000003/conv/photo.jpg",
+            attachment_name = "photo.jpg",
+            attachment_mime = "image/jpeg",
+            attachment_size = 123456L
+        )
+        val restored = Json.decodeFromString<NCMessage>(Json.encodeToString(original))
+        assertEquals(original, restored)
+        assertEquals(null, restored.body)
+        assertTrue(restored.attachment_size!! <= 10L * 1024 * 1024)
+    }
+
+    @Test
     fun message_body_contract_matches_server_limit() {
         assertTrue("x".repeat(1).length in 1..4000)
         assertTrue("x".repeat(4000).length in 1..4000)
