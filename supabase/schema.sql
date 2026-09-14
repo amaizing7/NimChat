@@ -27,11 +27,27 @@ create table if not exists public.messages (
   conversation_id uuid not null references public.conversations(id) on delete cascade,
   sender_id uuid not null references auth.users(id) on delete cascade,
   body text not null check (char_length(trim(body)) between 1 and 4000),
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
 create index if not exists messages_conversation_created_idx on public.messages(conversation_id, created_at);
 create index if not exists conversation_members_user_idx on public.conversation_members(user_id);
+
+create or replace function public.set_message_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+drop trigger if exists messages_set_updated_at on public.messages;
+create trigger messages_set_updated_at
+before update on public.messages
+for each row execute function public.set_message_updated_at();
 
 alter table public.profiles enable row level security;
 alter table public.conversations enable row level security;
@@ -46,18 +62,6 @@ revoke insert, update, delete, references, trigger, truncate on public.conversat
 revoke insert, update, delete, references, trigger, truncate on public.conversation_members from authenticated;
 revoke references, trigger, truncate on public.profiles, public.messages from authenticated;
 
-create or replace function private.is_conversation_member(target_conversation uuid, target_user uuid default auth.uid())
-returns boolean
-language sql
-security definer
-stable
-set search_path = public
-as $$
-  select exists (select 1 from public.conversation_members where conversation_id = target_conversation and user_id = target_user);
-$$;
-revoke all on function private.is_conversation_member(uuid, uuid) from public, anon;
-grant execute on function private.is_conversation_member(uuid, uuid) to authenticated;
-
 drop policy if exists "profiles readable by authenticated users" on public.profiles;
 drop policy if exists "users create own profile" on public.profiles;
 drop policy if exists "users update own profile" on public.profiles;
@@ -69,6 +73,18 @@ drop policy if exists "members can read messages" on public.messages;
 drop policy if exists "members can send messages" on public.messages;
 drop policy if exists "senders can update own messages" on public.messages;
 drop policy if exists "senders can delete own messages" on public.messages;
+
+create or replace function private.is_conversation_member(target_conversation uuid, target_user uuid default auth.uid())
+returns boolean
+language sql
+security definer
+stable
+set search_path = public
+as $$
+  select exists (select 1 from public.conversation_members where conversation_id = target_conversation and user_id = target_user);
+$$;
+revoke all on function private.is_conversation_member(uuid, uuid) from public, anon;
+grant execute on function private.is_conversation_member(uuid, uuid) to authenticated;
 
 create policy "profiles readable by authenticated users" on public.profiles for select to authenticated using (true);
 create policy "users create own profile" on public.profiles for insert to authenticated with check (id = auth.uid());
