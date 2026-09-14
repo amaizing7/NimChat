@@ -39,16 +39,18 @@ class MainActivity : Activity() {
         textSize = 16f
     }
 
+    private fun input(hintText: String): EditText = EditText(this).apply {
+        hint = hintText
+        textSize = 17f
+        maxLines = 1
+    }
+
     private fun showAuth() {
         val root = base().apply { gravity = Gravity.CENTER_HORIZONTAL }
         root.addView(text("NimChat", 34f, true), lp())
         root.addView(text("پیام‌رسان ساده، سریع و خصوصی", 17f), lp(0, 12, 0, 30))
 
-        val name = EditText(this).apply {
-            hint = "نام کاربری"
-            textSize = 17f
-            singleLine = true
-        }
+        val name = input("نام کاربری")
         root.addView(name, lp(-1, 0, 0, 14))
 
         val enter = button("ورود به NimChat")
@@ -71,11 +73,8 @@ class MainActivity : Activity() {
 
     private fun showHome() {
         val root = base()
-        val header = LinearLayout(this).apply {
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val title = text("NimChat", 29f, true)
-        header.addView(title, LinearLayout.LayoutParams(0, -2, 1f))
+        val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        header.addView(text("NimChat", 29f, true), LinearLayout.LayoutParams(0, -2, 1f))
         val logout = button("خروج")
         logout.textSize = 13f
         header.addView(logout, LinearLayout.LayoutParams(-2, -2))
@@ -88,11 +87,7 @@ class MainActivity : Activity() {
 
         root.addView(text("سلام ${currentUser ?: "دوست"} 👋", 20f, true), lp(0, 0, 0, 20))
 
-        val search = EditText(this).apply {
-            hint = "جستجوی کاربر یا گفتگو"
-            textSize = 16f
-            singleLine = true
-        }
+        val search = input("جستجوی کاربر یا گفتگو")
         root.addView(search, lp(-1, 0, 0, 18))
 
         root.addView(text("گفتگوها", 18f, true), lp(0, 0, 0, 10))
@@ -138,11 +133,7 @@ class MainActivity : Activity() {
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
 
         val composer = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        val input = EditText(this).apply {
-            hint = "پیام بنویس..."
-            textSize = 16f
-            singleLine = true
-        }
+        val input = input("پیام بنویس...")
         val send = button("ارسال")
         composer.addView(input, LinearLayout.LayoutParams(0, -2, 1f))
         composer.addView(send, LinearLayout.LayoutParams(-2, -2))
