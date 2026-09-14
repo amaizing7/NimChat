@@ -29,9 +29,19 @@ import java.util.Locale
 @Serializable
 data class Profile(val id: String, val username: String, val display_name: String? = null)
 @Serializable
-data class Message(val id: String? = null, val conversation_id: String, val sender_id: String, val body: String, val created_at: String? = null, val updated_at: String? = null)
+data class Message(
+    val id: String? = null,
+    val conversation_id: String,
+    val sender_id: String,
+    val body: String,
+    val created_at: String? = null,
+    val updated_at: String? = null,
+    val read_at: String? = null
+)
 @Serializable
 data class CreateConversationParams(@SerialName("target_user") val targetUser: String)
+@Serializable
+data class MarkConversationReadParams(@SerialName("target_conversation") val targetConversation: String)
 @Serializable
 data class ConversationSummary(val conversation_id: String, val other_user_id: String, val other_username: String, val other_display_name: String? = null, val last_message: String? = null, val last_message_at: String? = null)
 
@@ -97,9 +107,11 @@ class MainActivity : Activity() {
         fallbackRefreshJob=scope.launch{while(true){delay(6000);refreshMessages(cid)}}
     }
     private fun stopChatRealtime(){realtimeJob?.cancel();fallbackRefreshJob?.cancel();realtimeJob=null;fallbackRefreshJob=null;chatList=null;chatScroll=null;try{supabase.realtime.removeAllChannels()}catch(_:Exception){}}
-    private suspend fun refreshMessages(cid:String){try{val messages=withTimeout(10000){supabase.from("messages").select{filter{eq("conversation_id",cid)};order("created_at",Order.ASCENDING)}.decodeList<Message>()};val list=chatList?:return;list.removeAllViews();messages.forEach{addBubble(list,it)};chatScroll?.post{chatScroll?.fullScroll(View.FOCUS_DOWN)}}catch(_:Exception){}}
+    private suspend fun fetchMessages(cid:String):List<Message>{return withTimeout(10000){supabase.from("messages").select{filter{eq("conversation_id",cid)};order("created_at",Order.ASCENDING)}.decodeList<Message>()}}
+    private suspend fun markConversationRead(cid:String){withTimeout(10000){supabase.postgrest.rpc("mark_conversation_read",MarkConversationReadParams(cid))}}
+    private suspend fun refreshMessages(cid:String){try{var messages=fetchMessages(cid);val hasUnreadIncoming=messages.any{it.sender_id!=currentUser&&it.read_at==null};if(hasUnreadIncoming){markConversationRead(cid);messages=fetchMessages(cid)};val list=chatList?:return;list.removeAllViews();messages.forEach{addBubble(list,it)};chatScroll?.post{chatScroll?.fullScroll(View.FOCUS_DOWN)}}catch(_:Exception){}}
 
-    private fun addBubble(parent:LinearLayout,message:Message){val mine=message.sender_id==currentUser;val row=LinearLayout(this).apply{gravity=if(mine)Gravity.END else Gravity.START;setPadding(4,4,4,4)};val box=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(16,10,16,8);setBackgroundColor(if(mine)Color.rgb(220,235,255)else Color.WHITE)};box.addView(text(message.body,16f));val meta=LinearLayout(this).apply{gravity=Gravity.END};meta.addView(text(formatTime(message.created_at),10f).apply{setTextColor(Color.GRAY)});if(mine){if(message.updated_at!=null&&message.created_at!=null&&message.updated_at!=message.created_at)meta.addView(text("  ویرایش‌شده",9f).apply{setTextColor(Color.GRAY)});val actions=button("⋮");actions.textSize=18f;actions.setPadding(2,0,2,0);actions.setOnClickListener{showMessageActions(message)};meta.addView(actions,LinearLayout.LayoutParams(42,40))};box.addView(meta,lp(-1,3,0,0));row.addView(box,LinearLayout.LayoutParams(-2,-2));parent.addView(row)}
+    private fun addBubble(parent:LinearLayout,message:Message){val mine=message.sender_id==currentUser;val row=LinearLayout(this).apply{gravity=if(mine)Gravity.END else Gravity.START;setPadding(4,4,4,4)};val box=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(16,10,16,8);setBackgroundColor(if(mine)Color.rgb(220,235,255)else Color.WHITE)};box.addView(text(message.body,16f));val meta=LinearLayout(this).apply{gravity=Gravity.END};meta.addView(text(formatTime(message.created_at),10f).apply{setTextColor(Color.GRAY)});if(mine){if(message.updated_at!=null&&message.created_at!=null&&message.updated_at!=message.created_at)meta.addView(text("  ویرایش‌شده",9f).apply{setTextColor(Color.GRAY)});meta.addView(text(if(message.read_at!=null)"  ✓✓ خوانده شد" else "  ✓ ارسال شد",9f).apply{setTextColor(if(message.read_at!=null)Color.rgb(35,110,210)else Color.GRAY)});val actions=button("⋮");actions.textSize=18f;actions.setPadding(2,0,2,0);actions.setOnClickListener{showMessageActions(message)};meta.addView(actions,LinearLayout.LayoutParams(42,40))};box.addView(meta,lp(-1,3,0,0));row.addView(box,LinearLayout.LayoutParams(-2,-2));parent.addView(row)}
     private fun showMessageActions(message:Message){AlertDialog.Builder(this).setItems(arrayOf("ویرایش پیام","حذف پیام","لغو")){_,which->when(which){0->showEditDialog(message);1->confirmDelete(message)}}.show()}
     private fun showEditDialog(message:Message){val field=input("متن پیام").apply{setText(message.body);setSelection(text.length);maxLines=6};AlertDialog.Builder(this).setTitle("ویرایش پیام").setView(field).setNegativeButton("لغو",null).setPositiveButton("ذخیره"){_,_->updateMessage(message.id,field.text.toString().trim())}.show()}
     private fun updateMessage(id:String?,body:String){if(id==null||body.isEmpty())return;if(body.length>4000){Toast.makeText(this@MainActivity,"حداکثر ۴۰۰۰ کاراکتر",Toast.LENGTH_LONG).show();return};scope.launch{try{withTimeout(10000){supabase.from("messages").update({set("body",body)}){filter{eq("id",id)}}};activeConversation?.let{refreshMessages(it)}}catch(e:Exception){Toast.makeText(this@MainActivity,"ویرایش ناموفق: ${friendlyError(e)}",Toast.LENGTH_LONG).show()}}}
