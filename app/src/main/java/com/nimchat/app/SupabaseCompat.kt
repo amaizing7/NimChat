@@ -25,6 +25,8 @@ class NimChatPostgrest(private val delegate: Postgrest) {
     suspend fun rpc(function: String): PostgrestResult = delegate.rpc(function)
     suspend fun rpc(function: String, params: CreateConversationParams): PostgrestResult =
         delegate.rpc(function, buildJsonObject { put("target_user", params.targetUser) })
+    suspend fun rpc(function: String, params: MarkConversationReadParams): PostgrestResult =
+        delegate.rpc(function, buildJsonObject { put("target_conversation", params.targetConversation) })
 }
 
 class NimChatRealtime(private val delegate: Realtime) {
