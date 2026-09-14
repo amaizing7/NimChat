@@ -38,6 +38,13 @@ alter table public.conversations enable row level security;
 alter table public.conversation_members enable row level security;
 alter table public.messages enable row level security;
 
+grant select, insert, update on public.profiles to authenticated;
+grant select on public.conversations to authenticated;
+grant select on public.conversation_members to authenticated;
+grant select, insert, update, delete on public.messages to authenticated;
+revoke insert, update, delete on public.conversations from authenticated;
+revoke insert, update, delete on public.conversation_members from authenticated;
+
 create or replace function public.is_conversation_member(target_conversation uuid, target_user uuid default auth.uid())
 returns boolean
 language sql
@@ -45,10 +52,7 @@ security definer
 stable
 set search_path = public
 as $$
-  select exists (
-    select 1 from public.conversation_members
-    where conversation_id = target_conversation and user_id = target_user
-  );
+  select exists (select 1 from public.conversation_members where conversation_id = target_conversation and user_id = target_user);
 $$;
 revoke all on function public.is_conversation_member(uuid, uuid) from public;
 grant execute on function public.is_conversation_member(uuid, uuid) to authenticated;
@@ -69,10 +73,8 @@ create policy "profiles readable by authenticated users" on public.profiles for 
 create policy "users create own profile" on public.profiles for insert to authenticated with check (id = auth.uid());
 create policy "users update own profile" on public.profiles for update to authenticated using (id = auth.uid()) with check (id = auth.uid());
 create policy "members can read conversations" on public.conversations for select to authenticated using (created_by = auth.uid() or public.is_conversation_member(id, auth.uid()));
-create policy "authenticated users can create conversations" on public.conversations for insert to authenticated with check (created_by = auth.uid());
+-- Direct conversation creation is intentionally available only through the atomic RPC below.
 create policy "members can read membership" on public.conversation_members for select to authenticated using (user_id = auth.uid() or public.is_conversation_member(conversation_id, auth.uid()));
--- Membership creation is intentionally restricted to the atomic RPC below.
-create policy "users can add themselves or another member after joining" on public.conversation_members for insert to authenticated with check (user_id = auth.uid() or public.is_conversation_member(conversation_id, auth.uid()));
 create policy "members can read messages" on public.messages for select to authenticated using (public.is_conversation_member(conversation_id, auth.uid()));
 create policy "members can send messages" on public.messages for insert to authenticated with check (sender_id = auth.uid() and public.is_conversation_member(conversation_id, auth.uid()));
 create policy "senders can update own messages" on public.messages for update to authenticated using (sender_id = auth.uid()) with check (sender_id = auth.uid() and public.is_conversation_member(conversation_id, auth.uid()));
@@ -128,10 +130,7 @@ as $$
   join public.conversation_members mine on mine.conversation_id = c.id and mine.user_id = auth.uid()
   join public.conversation_members other on other.conversation_id = c.id and other.user_id <> auth.uid()
   join public.profiles p on p.id = other.user_id
-  left join lateral (
-    select m.body, m.created_at from public.messages m
-    where m.conversation_id = c.id order by m.created_at desc limit 1
-  ) last_msg on true
+  left join lateral (select m.body, m.created_at from public.messages m where m.conversation_id = c.id order by m.created_at desc limit 1) last_msg on true
   where auth.uid() is not null
   order by coalesce(last_msg.created_at, c.created_at) desc;
 $$;
