@@ -4,6 +4,8 @@ import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.postgrest.Postgrest
 import io.github.jan.supabase.postgrest.postgrest as officialPostgrest
 import io.github.jan.supabase.postgrest.result.PostgrestResult
+import io.github.jan.supabase.postgrest.query.filter.FilterOperation
+import io.github.jan.supabase.postgrest.query.filter.FilterOperator
 import io.github.jan.supabase.realtime.PostgresAction
 import io.github.jan.supabase.realtime.Realtime
 import io.github.jan.supabase.realtime.RealtimeChannel
@@ -32,6 +34,17 @@ class NimChatRealtime(private val delegate: Realtime) {
     }
 }
 
+class NimChatRealtimeFilter {
+    var table: String? = null
+    private var filterOperation: FilterOperation? = null
+
+    fun eq(column: String, value: Any) {
+        filterOperation = FilterOperation(column, FilterOperator.EQ, value)
+    }
+
+    fun build(): Pair<String?, FilterOperation?> = table to filterOperation
+}
+
 val SupabaseClient.postgrest: NimChatPostgrest
     get() = NimChatPostgrest(this.officialPostgrest)
 
@@ -40,5 +53,12 @@ val SupabaseClient.realtime: NimChatRealtime
 
 inline fun <reified T : PostgresAction> RealtimeChannel.postgresChangeFlow(
     schema: String,
-    noinline filter: io.github.jan.supabase.realtime.PostgresChangeFilter.() -> Unit = {}
-): Flow<T> = this.officialPostgresChangeFlow(schema, filter)
+    noinline filter: NimChatRealtimeFilter.() -> Unit = {}
+): Flow<T> {
+    val builder = NimChatRealtimeFilter().apply(filter)
+    val (table, operation) = builder.build()
+    return this.officialPostgresChangeFlow<T>(schema) {
+        this.table = table
+        operation?.let { this.filter(it) }
+    }
+}
