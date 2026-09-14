@@ -18,8 +18,8 @@ jobs:
           java-version: '17'
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
-      - name: Build debug APK
-        run: gradle assembleDebug
+      - name: Run unit tests, lint, and build
+        run: gradle test lintDebug assembleDebug --stacktrace
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
