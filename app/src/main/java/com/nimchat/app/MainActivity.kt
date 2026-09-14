@@ -19,6 +19,7 @@ import io.github.jan.supabase.postgrest.query.Order
 import io.github.jan.supabase.realtime.PostgresAction
 import io.github.jan.supabase.realtime.Realtime
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.merge
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import java.text.SimpleDateFormat
@@ -81,7 +82,20 @@ class MainActivity : Activity() {
 
     private fun showChat(){val cid=activeConversation?:return;stopChatRealtime();val root=base();val header=LinearLayout(this).apply{gravity=Gravity.CENTER_VERTICAL};val back=button("‹");back.textSize=28f;header.addView(back,LinearLayout.LayoutParams(54,54));header.addView(text(chatUser,22f,true),LinearLayout.LayoutParams(0,-2,1f));header.addView(text("گفتگو",12f).apply{setTextColor(Color.GRAY)});back.setOnClickListener{showHome()};root.addView(header,lp(-1,0,0,10));val scroll=ScrollView(this);val list=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(4,8,4,8)};scroll.addView(list);root.addView(scroll,LinearLayout.LayoutParams(-1,0,1f));chatList=list;chatScroll=scroll;val composer=LinearLayout(this).apply{gravity=Gravity.CENTER_VERTICAL};val messageInput=input("پیام بنویس...").apply{maxLines=4;minLines=1};val send=button("ارسال");composer.addView(messageInput,LinearLayout.LayoutParams(0,-2,1f));composer.addView(send,LinearLayout.LayoutParams(-2,-2));root.addView(composer,lp(-1,8,0,0));setContentView(root);send.setOnClickListener{sendMessage(cid,messageInput,send)};messageInput.setOnEditorActionListener{_,id,_->if(id==EditorInfo.IME_ACTION_DONE){send.performClick();true}else false};scope.launch{refreshMessages(cid)};startChatRealtime(cid)}
     private fun sendMessage(cid:String,input:EditText,send:Button){val value=input.text.toString().trim();if(value.isEmpty())return;if(value.length>4000){input.error="حداکثر ۴۰۰۰ کاراکتر";return};send.isEnabled=false;scope.launch{try{val me=currentUser?:error("جلسه کاربر وجود ندارد");withTimeout(10000){supabase.from("messages").insert(Message(conversation_id=cid,sender_id=me,body=value))};input.text.clear();refreshMessages(cid)}catch(e:Exception){Toast.makeText(this@MainActivity,"ارسال ناموفق: ${friendlyError(e)}",Toast.LENGTH_LONG).show()}finally{send.isEnabled=true}}}
-    private fun startChatRealtime(cid:String){realtimeJob=scope.launch{try{supabase.realtime.connect();val ch=supabase.realtime.channel("messages-$cid");val changes=ch.postgresChangeFlow<PostgresAction.Insert>(schema="public"){table="messages"};ch.subscribe();changes.collect{refreshMessages(cid)}}catch(_:Exception){}};fallbackRefreshJob=scope.launch{while(true){delay(6000);refreshMessages(cid)}}}
+    private fun startChatRealtime(cid:String){
+        realtimeJob=scope.launch{
+            try{
+                supabase.realtime.connect()
+                val ch=supabase.realtime.channel("messages-$cid")
+                val inserts=ch.postgresChangeFlow<PostgresAction.Insert>(schema="public"){table="messages"}
+                val updates=ch.postgresChangeFlow<PostgresAction.Update>(schema="public"){table="messages"}
+                val deletes=ch.postgresChangeFlow<PostgresAction.Delete>(schema="public"){table="messages"}
+                ch.subscribe()
+                merge(inserts,updates,deletes).collect{refreshMessages(cid)}
+            }catch(_:Exception){}
+        }
+        fallbackRefreshJob=scope.launch{while(true){delay(6000);refreshMessages(cid)}}
+    }
     private fun stopChatRealtime(){realtimeJob?.cancel();fallbackRefreshJob?.cancel();realtimeJob=null;fallbackRefreshJob=null;chatList=null;chatScroll=null;try{supabase.realtime.removeAllChannels()}catch(_:Exception){}}
     private suspend fun refreshMessages(cid:String){try{val messages=withTimeout(10000){supabase.from("messages").select{filter{eq("conversation_id",cid)};order("created_at",Order.ASCENDING)}.decodeList<Message>()};val list=chatList?:return;list.removeAllViews();messages.forEach{addBubble(list,it)};chatScroll?.post{chatScroll?.fullScroll(View.FOCUS_DOWN)}}catch(_:Exception){}}
 
