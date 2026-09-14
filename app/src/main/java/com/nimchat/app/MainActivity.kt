@@ -235,7 +235,7 @@ class MainActivity : Activity() {
                     val me = currentUser ?: throw IllegalStateException("جلسه کاربر وجود ندارد")
                     if (target.id == me) throw IllegalStateException("نمی‌توانی با خودت گفتگو بسازی")
                     val id = withTimeout(10000) {
-                        supabase.postgrest.rpc("create_direct_conversation", CreateConversationParams(target.id)).decodeSingle<String>()
+                        supabase.postgrest.rpc("create_direct_conversation", CreateConversationParams(target.id)).decodeAs<String>()
                     }
                     activeConversation = id
                     chatUser = target.username
@@ -372,10 +372,10 @@ class MainActivity : Activity() {
         realtimeJob = scope.launch {
             try {
                 supabase.realtime.connect()
-                val channel = supabase.realtime.createChannel("messages-$conversationId")
+                val channel = supabase.realtime.channel("messages-$conversationId")
                 val changes = channel.postgresChangeFlow<PostgresAction.Insert>(schema = "public") {
                     table = "messages"
-                    filter = "conversation_id=eq.$conversationId"
+                    filter { eq("conversation_id", conversationId) }
                 }
                 channel.subscribe()
                 changes.collect {
