@@ -1,5 +1,6 @@
 -- NimChat backend schema
 create extension if not exists pgcrypto;
+create schema if not exists private;
 
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
@@ -32,7 +33,6 @@ create table if not exists public.messages (
 create index if not exists messages_conversation_created_idx on public.messages(conversation_id, created_at);
 create index if not exists conversation_members_user_idx on public.conversation_members(user_id);
 
-alter table public.conversations add column if not exists created_by uuid references auth.users(id) on delete cascade;
 alter table public.profiles enable row level security;
 alter table public.conversations enable row level security;
 alter table public.conversation_members enable row level security;
@@ -45,7 +45,7 @@ grant select, insert, update, delete on public.messages to authenticated;
 revoke insert, update, delete on public.conversations from authenticated;
 revoke insert, update, delete on public.conversation_members from authenticated;
 
-create or replace function public.is_conversation_member(target_conversation uuid, target_user uuid default auth.uid())
+create or replace function private.is_conversation_member(target_conversation uuid, target_user uuid default auth.uid())
 returns boolean
 language sql
 security definer
@@ -54,8 +54,8 @@ set search_path = public
 as $$
   select exists (select 1 from public.conversation_members where conversation_id = target_conversation and user_id = target_user);
 $$;
-revoke all on function public.is_conversation_member(uuid, uuid) from public;
-grant execute on function public.is_conversation_member(uuid, uuid) to authenticated;
+revoke all on function private.is_conversation_member(uuid, uuid) from public, anon;
+grant execute on function private.is_conversation_member(uuid, uuid) to authenticated;
 
 drop policy if exists "profiles readable by authenticated users" on public.profiles;
 drop policy if exists "users create own profile" on public.profiles;
@@ -72,13 +72,12 @@ drop policy if exists "senders can delete own messages" on public.messages;
 create policy "profiles readable by authenticated users" on public.profiles for select to authenticated using (true);
 create policy "users create own profile" on public.profiles for insert to authenticated with check (id = auth.uid());
 create policy "users update own profile" on public.profiles for update to authenticated using (id = auth.uid()) with check (id = auth.uid());
-create policy "members can read conversations" on public.conversations for select to authenticated using (created_by = auth.uid() or public.is_conversation_member(id, auth.uid()));
--- Direct conversation creation is intentionally available only through the atomic RPC below.
-create policy "members can read membership" on public.conversation_members for select to authenticated using (user_id = auth.uid() or public.is_conversation_member(conversation_id, auth.uid()));
-create policy "members can read messages" on public.messages for select to authenticated using (public.is_conversation_member(conversation_id, auth.uid()));
-create policy "members can send messages" on public.messages for insert to authenticated with check (sender_id = auth.uid() and public.is_conversation_member(conversation_id, auth.uid()));
-create policy "senders can update own messages" on public.messages for update to authenticated using (sender_id = auth.uid()) with check (sender_id = auth.uid() and public.is_conversation_member(conversation_id, auth.uid()));
-create policy "senders can delete own messages" on public.messages for delete to authenticated using (sender_id = auth.uid() and public.is_conversation_member(conversation_id, auth.uid()));
+create policy "members can read conversations" on public.conversations for select to authenticated using (created_by = auth.uid() or private.is_conversation_member(id, auth.uid()));
+create policy "members can read membership" on public.conversation_members for select to authenticated using (user_id = auth.uid() or private.is_conversation_member(conversation_id, auth.uid()));
+create policy "members can read messages" on public.messages for select to authenticated using (private.is_conversation_member(conversation_id, auth.uid()));
+create policy "members can send messages" on public.messages for insert to authenticated with check (sender_id = auth.uid() and private.is_conversation_member(conversation_id, auth.uid()));
+create policy "senders can update own messages" on public.messages for update to authenticated using (sender_id = auth.uid()) with check (sender_id = auth.uid() and private.is_conversation_member(conversation_id, auth.uid()));
+create policy "senders can delete own messages" on public.messages for delete to authenticated using (sender_id = auth.uid() and private.is_conversation_member(conversation_id, auth.uid()));
 
 create or replace function public.create_direct_conversation(target_user uuid)
 returns uuid
@@ -137,7 +136,6 @@ $$;
 revoke all on function public.list_my_conversations() from public;
 grant execute on function public.list_my_conversations() to authenticated;
 
--- Keep the messages table in Supabase Realtime. This is safe to run repeatedly.
 do $$
 begin
   if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'messages') then
