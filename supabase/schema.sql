@@ -26,16 +26,23 @@ create table if not exists public.messages (
   id uuid primary key default gen_random_uuid(),
   conversation_id uuid not null references public.conversations(id) on delete cascade,
   sender_id uuid not null references auth.users(id) on delete cascade,
-  body text not null check (char_length(trim(body)) between 1 and 4000),
+  body text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  read_at timestamptz
+  read_at timestamptz,
+  attachment_path text,
+  attachment_name text,
+  attachment_mime text,
+  attachment_size bigint,
+  constraint messages_body_or_attachment_check check (
+    char_length(trim(coalesce(body, ''))) between 0 and 4000
+    and (char_length(trim(coalesce(body, ''))) > 0 or attachment_path is not null)
+  )
 );
-
-alter table public.messages add column if not exists read_at timestamptz;
 
 create index if not exists messages_conversation_created_idx on public.messages(conversation_id, created_at);
 create index if not exists messages_unread_idx on public.messages(conversation_id, sender_id, read_at) where read_at is null;
+create index if not exists messages_unread_conversation_idx on public.messages(conversation_id, sender_id, read_at) where read_at is null;
 create index if not exists conversation_members_user_idx on public.conversation_members(user_id);
 
 create or replace function public.set_message_updated_at()
@@ -138,19 +145,21 @@ returns table(
   other_username text,
   other_display_name text,
   last_message text,
-  last_message_at timestamptz
+  last_message_at timestamptz,
+  unread_count bigint
 )
 language sql
 security definer
 stable
 set search_path = public
 as $$
-  select c.id, other.user_id, p.username, p.display_name, last_msg.body, last_msg.created_at
+  select c.id, other.user_id, p.username, p.display_name, last_msg.body, last_msg.created_at, coalesce(unread.cnt,0)
   from public.conversations c
   join public.conversation_members mine on mine.conversation_id = c.id and mine.user_id = auth.uid()
   join public.conversation_members other on other.conversation_id = c.id and other.user_id <> auth.uid()
   join public.profiles p on p.id = other.user_id
   left join lateral (select m.body, m.created_at from public.messages m where m.conversation_id = c.id order by m.created_at desc limit 1) last_msg on true
+  left join lateral (select count(*)::bigint cnt from public.messages m where m.conversation_id = c.id and m.sender_id <> auth.uid() and m.read_at is null) unread on true
   where auth.uid() is not null
   order by coalesce(last_msg.created_at, c.created_at) desc;
 $$;
@@ -165,23 +174,27 @@ set search_path = public
 as $$
 begin
   if auth.uid() is null then raise exception 'not_authenticated'; end if;
-  if not private.is_conversation_member(target_conversation, auth.uid()) then
-    raise exception 'not_conversation_member';
-  end if;
-
-  update public.messages
-  set read_at = coalesce(read_at, now())
-  where conversation_id = target_conversation
-    and sender_id <> auth.uid()
-    and read_at is null;
+  if not private.is_conversation_member(target_conversation, auth.uid()) then raise exception 'not_conversation_member'; end if;
+  update public.messages set read_at = coalesce(read_at, now()) where conversation_id = target_conversation and sender_id <> auth.uid() and read_at is null;
 end;
 $$;
 revoke all on function public.mark_conversation_read(uuid) from public;
 grant execute on function public.mark_conversation_read(uuid) to authenticated;
 
+insert into storage.buckets (id,name,public,file_size_limit)
+values ('chat-files','chat-files',false,10485760)
+on conflict (id) do update set public=false,file_size_limit=10485760;
+
+drop policy if exists "nimchat chat files insert own folder" on storage.objects;
+drop policy if exists "nimchat chat files read conversation members" on storage.objects;
+drop policy if exists "nimchat chat files delete own folder" on storage.objects;
+create policy "nimchat chat files insert own folder" on storage.objects for insert to authenticated with check (bucket_id='chat-files' and (storage.foldername(name))[1]=(select auth.uid())::text);
+create policy "nimchat chat files read conversation members" on storage.objects for select to authenticated using (bucket_id='chat-files' and ((storage.foldername(name))[1]=(select auth.uid())::text or exists(select 1 from public.messages m where m.attachment_path=name and private.is_conversation_member(m.conversation_id,auth.uid()))));
+create policy "nimchat chat files delete own folder" on storage.objects for delete to authenticated using (bucket_id='chat-files' and (storage.foldername(name))[1]=(select auth.uid())::text);
+
 do $$
 begin
-  if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'messages') then
+  if not exists (select 1 from pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename='messages') then
     alter publication supabase_realtime add table public.messages;
   end if;
 exception when undefined_object then null;
