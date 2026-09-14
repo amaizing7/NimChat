@@ -12,8 +12,8 @@ android {
         applicationId 'com.nimchat.app'
         minSdk 26
         targetSdk 35
-        versionCode 4
-        versionName '0.4.0'
+        versionCode 5
+        versionName '0.5.0'
 
         buildConfigField 'String', 'SUPABASE_URL', '"https://hqkreszsbkgptplyzkad.supabase.co"'
         buildConfigField 'String', 'SUPABASE_KEY', '"sb_publishable_rh746ie553rTov-m4d1B2g_Kp58llQW"'
@@ -34,6 +34,7 @@ dependencies {
     implementation 'io.github.jan-tennert.supabase:postgrest-kt:3.1.4'
     implementation 'io.github.jan-tennert.supabase:auth-kt:3.1.4'
     implementation 'io.github.jan-tennert.supabase:realtime-kt:3.1.4'
+    implementation 'io.github.jan-tennert.supabase:storage-kt:3.1.4'
     implementation 'io.ktor:ktor-client-android:3.0.3'
     testImplementation 'junit:junit:4.13.2'
 }
