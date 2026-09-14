@@ -5,8 +5,10 @@ import android.app.*
 import android.content.*
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.Typeface
 import android.net.Uri
-import android.os.*
+import android.os.Build
+import android.os.Bundle
 import android.provider.OpenableColumns
 import android.view.*
 import android.view.inputmethod.EditorInfo
@@ -15,13 +17,17 @@ import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.FileProvider
-import io.github.jan.supabase.SupabaseClient
-import io.github.jan.supabase.createSupabaseClient
+import io.github.jan.supabase.auth.Auth
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.auth.signInAnonymously
+import io.github.jan.supabase.createSupabaseClient
+import io.github.jan.supabase.postgrest.Postgrest
 import io.github.jan.supabase.postgrest.from
 import io.github.jan.supabase.postgrest.query.Order
 import io.github.jan.supabase.realtime.PostgresAction
+import io.github.jan.supabase.realtime.Realtime
+import io.github.jan.supabase.storage.Storage
+import io.github.jan.supabase.storage.storage
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.merge
 import kotlinx.serialization.Serializable
@@ -29,63 +35,616 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
-private const val MAX_MESSAGE_LENGTH = 4000
-private const val MAX_FILE_SIZE = 10 * 1024 * 1024
+@Serializable
+data class NCProfile(val id: String, val username: String, val display_name: String? = null)
 
 @Serializable
-data class NCProfile(val id:String,val username:String,val display_name:String?=null)
+data class NCMessage(
+    val id: String? = null,
+    val conversation_id: String,
+    val sender_id: String,
+    val body: String? = null,
+    val created_at: String? = null,
+    val updated_at: String? = null,
+    val read_at: String? = null,
+    val attachment_path: String? = null,
+    val attachment_name: String? = null,
+    val attachment_mime: String? = null,
+    val attachment_size: Long? = null
+)
+
 @Serializable
-data class NCMessage(val id:String?=null,val conversation_id:String,val sender_id:String,val body:String?=null,val created_at:String?=null,val updated_at:String?=null,val read_at:String?=null,val attachment_path:String?=null,val attachment_name:String?=null,val attachment_mime:String?=null,val attachment_size:Long?=null)
-@Serializable
-data class NCConversation(val conversation_id:String,val other_user_id:String,val other_username:String,val other_display_name:String?=null,val last_message:String?=null,val last_message_at:String?=null,val unread_count:Long=0)
+data class NCConversation(
+    val conversation_id: String,
+    val other_user_id: String,
+    val other_username: String,
+    val other_display_name: String? = null,
+    val last_message: String? = null,
+    val last_message_at: String? = null,
+    val unread_count: Long = 0
+)
+
+private val ncSupabase = createSupabaseClient(BuildConfig.SUPABASE_URL, BuildConfig.SUPABASE_KEY) {
+    install(Auth)
+    install(Postgrest)
+    install(Realtime)
+    install(Storage)
+}
 
 class NimChatActivity : Activity() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val ncSupabase: SupabaseClient by lazy { createSupabaseClient(BuildConfig.SUPABASE_URL, BuildConfig.SUPABASE_KEY) { install(io.github.jan.supabase.auth.Auth) } }
-    private var uid:String?=null; private var username=""; private var activeCid:String?=null; private var chatUser=""
-    private var list:LinearLayout?=null; private var scroll:ScrollView?=null
-    private var rt:Job?=null; private var fallback:Job?=null; private var homeRt:Job?=null
-    private var pendingFileCid:String?=null
-    private val pickFile=9001
-    private val channelId="nimchat_messages"
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var uid: String? = null
+    private var username = ""
+    private var activeCid: String? = null
+    private var chatUser = ""
+    private var list: LinearLayout? = null
+    private var scroll: ScrollView? = null
+    private var rt: Job? = null
+    private var homeRt: Job? = null
+    private var fallback: Job? = null
+    private var pendingFileCid: String? = null
+    private val pickFile = 1001
+    private val channelId = "nimchat_messages"
 
-    override fun onCreate(state:Bundle?) { super.onCreate(state); createNotificationChannel(); scope.launch { bootstrap() } }
-    override fun onDestroy(){ scope.cancel(); super.onDestroy() }
-    private suspend fun bootstrap(){ try { uid=ensureAuthenticated(); val p=ncSupabase.from("profiles").select { filter { eq("id",uid!!) } }.decodeSingleOrNull<NCProfile>(); if(p==null) showAuth(); else { username=p.username; showHome() } } catch(e:Exception){ showAuth(friendly(e)) } }
-    private suspend fun ensureAuthenticated():String { ncSupabase.auth.currentUserOrNull()?.id?.let{return it}; withTimeout(12000){ncSupabase.auth.signInAnonymously()}; return ncSupabase.auth.currentUserOrNull()?.id ?: error("احراز هویت ناموفق") }
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        createNotificationChannel()
+        uid = ncSupabase.auth.currentUserOrNull()?.id
+        if (uid == null) showAuth() else loadProfile()
+    }
 
-    private fun base()=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(20,20,20,20);setBackgroundColor(Color.rgb(246,248,252))}
-    private fun t(s:String,size:Float,bold:Boolean=false)=TextView(this).apply{text=s;textSize=size;if(bold)setTypeface(typeface,1)}
-    private fun inp(h:String)=EditText(this).apply{hint=h;setSingleLine(false);imeOptions=EditorInfo.IME_ACTION_DONE}
-    private fun btn(s:String)=Button(this).apply{text=s}
-    private fun lp(w:Int=-1,top:Int=0,bottom:Int=0,left:Int=0)=LinearLayout.LayoutParams(w,-2).apply{setMargins(left,top,0,bottom)}
-    private fun showAuth(error:String?=null){ stopAll(); val r=base();r.gravity=Gravity.CENTER_HORIZONTAL;r.addView(t("NimChat",34f,true),lp());r.addView(t("پیام‌رسان سریع و ساده",17f),lp(-1,8,20));error?.let{r.addView(t(it,14f).apply{setTextColor(Color.rgb(180,40,40))},lp(-1,0,10))};val n=inp("نام کاربری (a-z, 0-9, _)");r.addView(n,lp(-1,0,10));val b=btn("ورود به NimChat");r.addView(b);setContentView(r);b.setOnClickListener{val u=n.text.toString().trim().lowercase(Locale.ROOT);if(!u.matches(Regex("[a-z0-9_]{2,30}"))){n.error="۲ تا ۳۰ کاراکتر";return@setOnClickListener};b.isEnabled=false;scope.launch{try{val id=ensureAuthenticated();val p=withTimeout(10000){ncSupabase.from("profiles").select{filter{eq("id",id)}}.decodeSingleOrNull<NCProfile>()};if(p==null)withTimeout(10000){ncSupabase.from("profiles").insert(NCProfile(id,u,u))}else if(p.username!=u)error("این حساب قبلاً با نام کاربری ${p.username} ثبت شده است");uid=id;username=u;showHome()}catch(e:Exception){b.isEnabled=true;showAuth("ورود ناموفق: ${friendly(e)}")}}}}
+    override fun onDestroy() {
+        stopAll()
+        scope.cancel()
+        super.onDestroy()
+    }
 
-    private fun showHome(){stopChatOnly();val r=base();val h=LinearLayout(this).apply{gravity=Gravity.CENTER_VERTICAL};h.addView(t("NimChat",28f,true),LinearLayout.LayoutParams(0,-2,1f));h.addView(btn("پروفایل").apply{setOnClickListener{showProfileDialog()}});h.addView(btn("خروج").apply{setOnClickListener{scope.launch{try{withTimeout(5000){ncSupabase.auth.signOut()}}catch(_:Exception){};uid=null;username="";showAuth()}}});r.addView(h,lp(-1,0,10));r.addView(t("سلام $username 👋",19f,true),lp(-1,0,10));val search=inp("جستجوی نام کاربری / گفتگو");r.addView(search,lp(-1,0,8));val start=btn("＋ شروع گفتگوی جدید");r.addView(start,lp(-1,0,8));start.setOnClickListener{startChatByUsername(search,start)};val sv=ScrollView(this);val c=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};sv.addView(c);r.addView(sv,LinearLayout.LayoutParams(-1,0,1f));list=c;setContentView(r);scope.launch{loadConversations(c,"")};search.addTextChangedListener(object:android.text.TextWatcher{override fun beforeTextChanged(s:CharSequence?,st:Int,c:Int,a:Int){};override fun onTextChanged(s:CharSequence?,st:Int,b:Int,c2:Int){scope.launch{loadConversations(c,s?.toString()?.trim()?.lowercase(Locale.ROOT).orEmpty())}};override fun afterTextChanged(e:android.text.Editable?){}});startHomeRealtime()}
+    private fun base() = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(20, 20, 20, 16)
+        setBackgroundColor(Color.rgb(248, 249, 251))
+    }
 
-    private fun startChatByUsername(input:EditText,b:Button){val u=input.text.toString().trim().lowercase(Locale.ROOT);if(!u.matches(Regex("[a-z0-9_]{2,30}"))){input.error="نام کاربری معتبر نیست";return};b.isEnabled=false;scope.launch{try{val target=withTimeout(10000){ncSupabase.from("profiles").select{filter{eq("username",u)}}.decodeSingleOrNull<NCProfile>()}?:error("کاربر پیدا نشد");val me=uid?:error("جلسه وجود ندارد");if(target.id==me)error("گفتگو با خودت ممکن نیست");val cid=withTimeout(10000){ncSupabase.postgrest.rpc("create_direct_conversation",CreateConversationParams(target.id)).decodeAs<String>()};activeCid=cid;chatUser=target.username;showChat()}catch(e:Exception){Toast.makeText(this@NimChatActivity,friendly(e),Toast.LENGTH_LONG).show()}finally{b.isEnabled=true}}}
-    private suspend fun loadConversations(c:LinearLayout,query:String){try{val rows=withTimeout(12000){ncSupabase.postgrest.rpc("list_my_conversations").decodeList<NCConversation>()};val filtered=rows.filter{query.isBlank()||it.other_username.lowercase().contains(query)||it.other_display_name.orEmpty().lowercase().contains(query)||it.last_message.orEmpty().lowercase().contains(query)};c.removeAllViews();if(filtered.isEmpty()){c.addView(t(if(query.isBlank())"هنوز گفتگویی نداری." else "نتیجه‌ای پیدا نشد",15f).apply{setTextColor(Color.GRAY)},lp(-1,10,0));return};filtered.forEach{row->val item=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(14,12,14,12);setBackgroundColor(Color.WHITE);isClickable=true};val top=LinearLayout(this).apply{gravity=Gravity.CENTER_VERTICAL};top.addView(t(row.other_display_name?.takeIf{it.isNotBlank()}?:row.other_username,17f,true),LinearLayout.LayoutParams(0,-2,1f));if(row.unread_count>0)top.addView(t(" ${row.unread_count} ",13f,true).apply{setTextColor(Color.WHITE);setBackgroundColor(Color.rgb(35,110,210));setPadding(8,3,8,3)});item.addView(top);item.addView(t(row.last_message?.replace("\n"," ")?.take(80)?:"هنوز پیامی ارسال نشده",14f).apply{setTextColor(Color.DKGRAY)},lp(-1,4,0));row.last_message_at?.let{item.addView(t(formatTime(it),11f).apply{setTextColor(Color.GRAY)},lp(-1,4,0))};item.setOnClickListener{activeCid=row.conversation_id;chatUser=row.other_username;showChat()};c.addView(item,lp(-1,0,8))}}catch(e:Exception){c.removeAllViews();c.addView(t("بارگذاری ناموفق: ${friendly(e)}",14f).apply{setTextColor(Color.RED)})}}
+    private fun t(s: String, z: Float, bold: Boolean = false) = TextView(this).apply {
+        text = s
+        textSize = z
+        setTextColor(Color.rgb(25, 28, 35))
+        if (bold) typeface = Typeface.DEFAULT_BOLD
+    }
 
-    private fun showChat(){val cid=activeCid?:return;stopChatOnly();val r=base();val h=LinearLayout(this).apply{gravity=Gravity.CENTER_VERTICAL};h.addView(btn("‹").apply{textSize=28f;setOnClickListener{showHome()}},LinearLayout.LayoutParams(54,54));h.addView(t(chatUser,22f,true),LinearLayout.LayoutParams(0,-2,1f));h.addView(btn("📎").apply{setOnClickListener{pickAttachment(cid)}});r.addView(h,lp(-1,0,6));val sv=ScrollView(this);val ml=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(4,8,4,8)};sv.addView(ml);r.addView(sv,LinearLayout.LayoutParams(-1,0,1f));list=ml;scroll=sv;val comp=LinearLayout(this).apply{gravity=Gravity.CENTER_VERTICAL};val input=inp("پیام بنویس...").apply{maxLines=4;minLines=1};val send=btn("ارسال");comp.addView(input,LinearLayout.LayoutParams(0,-2,1f));comp.addView(send);r.addView(comp,lp(-1,8));setContentView(r);send.setOnClickListener{sendText(cid,input,send)};scope.launch{refreshMessages(cid)};startChatRealtime(cid)}
-    private fun sendText(cid:String,input:EditText,b:Button){val body=input.text.toString().trim();if(body.isEmpty())return;if(body.length>MAX_MESSAGE_LENGTH){input.error="حداکثر ۴۰۰۰ کاراکتر";return};b.isEnabled=false;scope.launch{try{val me=uid?:error("جلسه وجود ندارد");withTimeout(10000){ncSupabase.from("messages").insert(NCMessage(conversation_id=cid,sender_id=me,body=body))};input.text.clear();refreshMessages(cid)}catch(e:Exception){Toast.makeText(this@NimChatActivity,"ارسال ناموفق: ${friendly(e)}",Toast.LENGTH_LONG).show()}finally{b.isEnabled=true}}}
+    private fun btn(s: String) = Button(this).apply { text = s; isAllCaps = false }
 
-    private fun startChatRealtime(cid:String){rt=scope.launch{try{ncSupabase.realtime.connect();val ch=ncSupabase.realtime.channel("chat-$cid");val i=ch.postgresChangeFlow<PostgresAction.Insert>(schema="public"){table="messages";filter{eq("conversation_id",cid)}};val u=ch.postgresChangeFlow<PostgresAction.Update>(schema="public"){table="messages";filter{eq("conversation_id",cid)}};val d=ch.postgresChangeFlow<PostgresAction.Delete>(schema="public"){table="messages";filter{eq("conversation_id",cid)}};ch.subscribe();merge(i,u,d).collect{refreshMessages(cid)}}catch(_:Exception){}};fallback=scope.launch{while(isActive){delay(6000);refreshMessages(cid)}}}
-    private suspend fun refreshMessages(cid:String){try{var m=withTimeout(10000){ncSupabase.from("messages").select{filter{eq("conversation_id",cid)};order("created_at",Order.ASCENDING)}.decodeList<NCMessage>()};if(m.any{it.sender_id!=uid&&it.read_at==null}){withTimeout(10000){ncSupabase.postgrest.rpc("mark_conversation_read",MarkConversationReadParams(cid))};m=withTimeout(10000){ncSupabase.from("messages").select{filter{eq("conversation_id",cid)};order("created_at",Order.ASCENDING)}.decodeList<NCMessage>()}};val c=list?:return;c.removeAllViews();m.forEach{addMessage(c,it)};scroll?.post{scroll?.fullScroll(View.FOCUS_DOWN)}}catch(_:Exception){}}
-    private fun addMessage(p:LinearLayout,m:NCMessage){val mine=m.sender_id==uid;val row=LinearLayout(this).apply{gravity=if(mine)Gravity.END else Gravity.START;setPadding(4,4,4,4)};val box=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(15,9,15,8);setBackgroundColor(if(mine)Color.rgb(220,235,255)else Color.WHITE)};if(!m.body.isNullOrBlank())box.addView(t(m.body!!,16f));m.attachment_path?.let{box.addView(btn("📎 ${m.attachment_name?:"فایل"}").apply{setOnClickListener{openAttachment(m)}})};val meta=LinearLayout(this).apply{gravity=Gravity.END};meta.addView(t(formatTime(m.created_at),10f).apply{setTextColor(Color.GRAY)});if(mine){meta.addView(t(if(m.read_at!=null)" ✓✓ خوانده شد" else " ✓ ارسال شد",9f).apply{setTextColor(if(m.read_at!=null)Color.rgb(35,110,210)else Color.GRAY)});meta.addView(btn("⋮").apply{setOnClickListener{messageActions(m)}})};box.addView(meta,lp(-1,3));row.addView(box,LinearLayout.LayoutParams(-2,-2));p.addView(row)}
-    private fun messageActions(m:NCMessage){val a=if(m.body.isNullOrBlank())arrayOf("حذف پیام","لغو")else arrayOf("ویرایش پیام","حذف پیام","لغو");AlertDialog.Builder(this).setItems(a){_,w->if(m.body.isNullOrBlank()){if(w==0)confirmDelete(m)}else when(w){0->showEditDialog(m);1->confirmDelete(m)}}.show()}
-    private fun showEditDialog(m:NCMessage){val f=inp("متن پیام").apply{setText(m.body.orEmpty());setSelection(text.length);maxLines=6};AlertDialog.Builder(this).setTitle("ویرایش پیام").setView(f).setNegativeButton("لغو",null).setPositiveButton("ذخیره"){_,_->val v=f.text.toString().trim();if(v.isNotEmpty()&&v.length<=MAX_MESSAGE_LENGTH)scope.launch{try{ncSupabase.from("messages").update({set("body",v)}){filter{eq("id",m.id?:"")}};activeCid?.let{refreshMessages(it)}}catch(e:Exception){Toast.makeText(this@NimChatActivity,friendly(e),Toast.LENGTH_LONG).show()}}}.show()}
-    private fun confirmDelete(m:NCMessage){AlertDialog.Builder(this).setTitle("حذف پیام").setMessage("این پیام حذف شود؟").setNegativeButton("لغو",null).setPositiveButton("حذف"){_,_->scope.launch{try{ncSupabase.from("messages").delete{filter{eq("id",m.id?:"")}};activeCid?.let{refreshMessages(it)}}catch(e:Exception){Toast.makeText(this@NimChatActivity,friendly(e),Toast.LENGTH_LONG).show()}}}.show()}
-    private fun pickAttachment(cid:String){pendingFileCid=cid;startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply{addCategory(Intent.CATEGORY_OPENABLE);type="*/*"},pickFile)}
-    override fun onActivityResult(rq:Int,rc:Int,data:Intent?){super.onActivityResult(rq,rc,data);if(rq==pickFile&&rc==RESULT_OK){val u=data?.data?:return;val c=pendingFileCid?:return;scope.launch{uploadAttachment(c,u)}}}
-    private suspend fun uploadAttachment(cid:String,uri:Uri){try{val res=contentResolver;val size=res.query(uri,null,null,null,null)?.use{c->val i=c.getColumnIndex(OpenableColumns.SIZE);if(c.moveToFirst()&&i>=0)c.getLong(i)else-1L}?:-1L;if(size>MAX_FILE_SIZE)error("حداکثر حجم فایل ۱۰ مگابایت است");val bytes=res.openInputStream(uri)?.use{it.readBytes()}?:error("خواندن فایل ناموفق بود");if(bytes.size>MAX_FILE_SIZE)error("حداکثر حجم فایل ۱۰ مگابایت است");val name=queryDisplayName(uri)? :"file";val mime=res.getType(uri)?:"application/octet-stream";val me=uid?:error("جلسه وجود ندارد");val path="$me/${UUID.randomUUID()}-${name.replace(Regex("[^A-Za-z0-9._-]"),"_")}";withContext(Dispatchers.IO){ncSupabase.storage.from("chat-files").upload(path,bytes)};withTimeout(10000){ncSupabase.from("messages").insert(NCMessage(conversation_id=cid,sender_id=me,attachment_path=path,attachment_name=name,attachment_mime=mime,attachment_size=bytes.size.toLong()))};refreshMessages(cid)}catch(e:Exception){Toast.makeText(this@NimChatActivity,"ارسال فایل ناموفق: ${friendly(e)}",Toast.LENGTH_LONG).show()}}
-    private fun queryDisplayName(uri:Uri)=contentResolver.query(uri,null,null,null,null)?.use{c->val i=c.getColumnIndex(OpenableColumns.DISPLAY_NAME);if(c.moveToFirst()&&i>=0)c.getString(i)else null}
-    private fun openAttachment(m:NCMessage){val path=m.attachment_path?:return;scope.launch{try{val bytes=withContext(Dispatchers.IO){ncSupabase.storage.from("chat-files").downloadAuthenticated(path)};val file=File(cacheDir,m.attachment_name?:"attachment");file.writeBytes(bytes);val u=FileProvider.getUriForFile(this@NimChatActivity,"${BuildConfig.APPLICATION_ID}.fileprovider",file);startActivity(Intent(Intent.ACTION_VIEW).apply{setDataAndType(u,m.attachment_mime?:"application/octet-stream");addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)})}catch(e:Exception){Toast.makeText(this@NimChatActivity,"باز کردن فایل ناموفق: ${friendly(e)}",Toast.LENGTH_LONG).show()}}}
-    private fun showProfileDialog(){scope.launch{try{val id=uid?:return@launch;val cur=withTimeout(10000){ncSupabase.from("profiles").select{filter{eq("id",id)}}.decodeSingleOrNull<NCProfile>()};val f=inp("نام نمایشی").apply{setText(cur?.display_name?:username)};AlertDialog.Builder(this@NimChatActivity).setTitle("پروفایل").setView(f).setNegativeButton("لغو",null).setPositiveButton("ذخیره"){_,_->scope.launch{try{ncSupabase.from("profiles").update({set("display_name",f.text.toString().trim())}){filter{eq("id",id)}};showHome()}catch(e:Exception){Toast.makeText(this@NimChatActivity,friendly(e),Toast.LENGTH_LONG).show()}}}.show()}catch(e:Exception){Toast.makeText(this@NimChatActivity,friendly(e),Toast.LENGTH_LONG).show()}}}
-    private fun startHomeRealtime(){homeRt?.cancel();homeRt=scope.launch{try{ncSupabase.realtime.connect();val ch=ncSupabase.realtime.channel("home-${uid?:"user"}");val i=ch.postgresChangeFlow<PostgresAction.Insert>(schema="public"){table="messages"};val u=ch.postgresChangeFlow<PostgresAction.Update>(schema="public"){table="messages"};val d=ch.postgresChangeFlow<PostgresAction.Delete>(schema="public"){table="messages"};ch.subscribe();merge(i,u,d).collect{loadConversations(list?:return@collect,"");if(it is PostgresAction.Insert)notifyIncomingSafely(it)}}catch(_:Exception){}}}
-    private fun notifyIncomingSafely(a:PostgresAction.Insert){try{val record=a.record;val sender=record["sender_id"]?.toString()?:return;if(sender==uid)return;val cid=record["conversation_id"]?.toString()?:return;if(cid==activeCid)return;val body=record["body"]?.toString()?.takeIf{it.isNotBlank()}?:"فایل جدید";if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED){ActivityCompat.requestPermissions(this,arrayOf(Manifest.permission.POST_NOTIFICATIONS),2001);return};NotificationManagerCompat.from(this).notify(cid.hashCode(),NotificationCompat.Builder(this,channelId).setSmallIcon(android.R.drawable.ic_dialog_email).setContentTitle("NimChat").setContentText(body).setAutoCancel(true).setPriority(NotificationCompat.PRIORITY_DEFAULT).build())}catch(_:Exception){}}
-    private fun createNotificationChannel(){if(Build.VERSION.SDK_INT>=26)getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(channelId,"پیام‌های NimChat",NotificationManager.IMPORTANCE_DEFAULT))}
-    private fun stopChatOnly(){rt?.cancel();fallback?.cancel();rt=null;fallback=null;try{ncSupabase.realtime.removeAllChannels()}catch(_:Exception){}}
-    private fun stopAll(){stopChatOnly();homeRt?.cancel();homeRt=null;try{ncSupabase.realtime.removeAllChannels()}catch(_:Exception){}}
-    private fun friendly(e:Exception)=e.message?.replace(Regex("\\s+")," ")?.take(220)? :"خطای نامشخص"
-    private fun formatTime(v:String?):String{if(v.isNullOrBlank())return "";return try{val d=SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSSSSXXX",Locale.US).parse(v)?:return v.take(16);SimpleDateFormat("HH:mm",Locale.getDefault()).format(d)}catch(_:Exception){try{val d=SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX",Locale.US).parse(v)?:return v.take(16);SimpleDateFormat("HH:mm",Locale.getDefault()).format(d)}catch(_:Exception){v.take(16)}}}
+    private fun inp(h: String) = EditText(this).apply {
+        hint = h
+        textSize = 16f
+        maxLines = 1
+        imeOptions = EditorInfo.IME_ACTION_DONE
+    }
+
+    private fun lp(w: Int = -1, top: Int = 0, bottom: Int = 0, left: Int = 0) =
+        LinearLayout.LayoutParams(w, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(left, top, 0, bottom) }
+
+    private fun showAuth(error: String? = null) {
+        stopAll()
+        val root = base().apply { gravity = Gravity.CENTER_HORIZONTAL }
+        root.addView(t("NimChat", 34f, true), lp())
+        root.addView(t("پیام‌رسان سریع و ساده", 17f), lp(-1, 8, 20))
+        if (error != null) root.addView(t(error, 14f).apply { setTextColor(Color.rgb(180, 40, 40)) }, lp(-1, 0, 10))
+        val name = inp("نام کاربری (a-z, 0-9, _)")
+        root.addView(name, lp(-1, 0, 10))
+        val enter = btn("ورود به NimChat")
+        root.addView(enter, lp(-1))
+        setContentView(root)
+        enter.setOnClickListener {
+            val u = name.text.toString().trim().lowercase(Locale.ROOT)
+            if (!u.matches(Regex("[a-z0-9_]{2,30}"))) {
+                name.error = "۲ تا ۳۰ کاراکتر"
+                return@setOnClickListener
+            }
+            enter.isEnabled = false
+            scope.launch {
+                try {
+                    val id = ensureAuthenticated()
+                    val profile = withTimeout(10000) {
+                        ncSupabase.from("profiles").select { filter { eq("id", id) } }.decodeSingleOrNull<NCProfile>()
+                    }
+                    if (profile == null) {
+                        withTimeout(10000) { ncSupabase.from("profiles").insert(NCProfile(id, u, u)) }
+                    } else if (profile.username != u) {
+                        error("این حساب قبلاً با نام کاربری ${profile.username} ثبت شده است")
+                    }
+                    uid = id
+                    username = u
+                    showHome()
+                } catch (e: Exception) {
+                    enter.isEnabled = true
+                    showAuth("ورود ناموفق: ${friendly(e)}")
+                }
+            }
+        }
+    }
+
+    private suspend fun ensureAuthenticated(): String {
+        val cached = ncSupabase.auth.currentUserOrNull()?.id
+        if (cached != null) return cached
+        withTimeout(12000) { ncSupabase.auth.signInAnonymously() }
+        return ncSupabase.auth.currentUserOrNull()?.id ?: error("احراز هویت ناموفق")
+    }
+
+    private fun loadProfile() = scope.launch {
+        try {
+            val id = uid ?: return@launch
+            val profile = withTimeout(10000) {
+                ncSupabase.from("profiles").select { filter { eq("id", id) } }.decodeSingleOrNull<NCProfile>()
+            }
+            if (profile == null) showAuth("پروفایل پیدا نشد")
+            else {
+                username = profile.username
+                showHome()
+            }
+        } catch (e: Exception) {
+            showAuth(friendly(e))
+        }
+    }
+
+    private fun showHome() {
+        stopChatOnly()
+        val root = base()
+        val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        header.addView(t("NimChat", 28f, true), LinearLayout.LayoutParams(0, -2, 1f))
+        val profile = btn("پروفایل")
+        profile.setOnClickListener { showProfileDialog() }
+        header.addView(profile)
+        val logout = btn("خروج")
+        logout.setOnClickListener {
+            scope.launch {
+                try { withTimeout(5000) { ncSupabase.auth.signOut() } } catch (_: Exception) {}
+                uid = null
+                username = ""
+                showAuth()
+            }
+        }
+        header.addView(logout)
+        root.addView(header, lp(-1, 0, 10))
+        root.addView(t("سلام $username 👋", 19f, true), lp(-1, 0, 10))
+        val search = inp("نام کاربری برای شروع گفتگو")
+        root.addView(search, lp(-1, 0, 8))
+        val start = btn("＋ شروع گفتگوی جدید")
+        root.addView(start, lp(-1, 0, 14))
+        start.setOnClickListener { startChatByUsername(search, start) }
+        root.addView(t("گفتگوهای من", 19f, true), lp(-1, 0, 8))
+        val sv = ScrollView(this)
+        val conversationList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        sv.addView(conversationList)
+        root.addView(sv, LinearLayout.LayoutParams(-1, 0, 1f))
+        list = conversationList
+        setContentView(root)
+        scope.launch { loadConversations(conversationList) }
+        startHomeRealtime()
+    }
+
+    private fun startChatByUsername(input: EditText, button: Button) {
+        val u = input.text.toString().trim().lowercase(Locale.ROOT)
+        if (!u.matches(Regex("[a-z0-9_]{2,30}"))) {
+            input.error = "نام کاربری معتبر نیست"
+            return
+        }
+        button.isEnabled = false
+        scope.launch {
+            try {
+                val target = withTimeout(10000) {
+                    ncSupabase.from("profiles").select { filter { eq("username", u) } }.decodeSingleOrNull<NCProfile>()
+                } ?: error("کاربر پیدا نشد")
+                val me = uid ?: error("جلسه وجود ندارد")
+                if (target.id == me) error("گفتگو با خودت ممکن نیست")
+                val cid = withTimeout(10000) {
+                    ncSupabase.postgrest.rpc("create_direct_conversation", CreateConversationParams(target.id)).decodeAs<String>()
+                }
+                activeCid = cid
+                chatUser = target.username
+                showChat()
+            } catch (e: Exception) {
+                Toast.makeText(this@NimChatActivity, friendly(e), Toast.LENGTH_LONG).show()
+            } finally {
+                button.isEnabled = true
+            }
+        }
+    }
+
+    private suspend fun loadConversations(container: LinearLayout) {
+        try {
+            val rows = withTimeout(12000) {
+                ncSupabase.postgrest.rpc("list_my_conversations").decodeList<NCConversation>()
+            }
+            container.removeAllViews()
+            if (rows.isEmpty()) {
+                container.addView(t("هنوز گفتگویی نداری.", 15f).apply { setTextColor(Color.GRAY) }, lp(-1, 10, 0))
+                return
+            }
+            rows.forEach { row ->
+                val item = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(14, 12, 14, 12)
+                    setBackgroundColor(Color.WHITE)
+                    isClickable = true
+                }
+                val top = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+                top.addView(t(row.other_display_name?.takeIf { it.isNotBlank() } ?: row.other_username, 17f, true), LinearLayout.LayoutParams(0, -2, 1f))
+                if (row.unread_count > 0) {
+                    top.addView(t(" ${row.unread_count} ", 13f, true).apply {
+                        setTextColor(Color.WHITE)
+                        setBackgroundColor(Color.rgb(35, 110, 210))
+                        setPadding(8, 3, 8, 3)
+                    })
+                }
+                item.addView(top)
+                item.addView(t(row.last_message?.replace("\n", " ")?.take(80) ?: "هنوز پیامی ارسال نشده", 14f).apply { setTextColor(Color.DKGRAY) }, lp(-1, 4, 0))
+                row.last_message_at?.let { item.addView(t(formatTime(it), 11f).apply { setTextColor(Color.GRAY) }, lp(-1, 4, 0)) }
+                item.setOnClickListener {
+                    activeCid = row.conversation_id
+                    chatUser = row.other_username
+                    showChat()
+                }
+                container.addView(item, lp(-1, 0, 8))
+            }
+        } catch (e: Exception) {
+            container.removeAllViews()
+            container.addView(t("بارگذاری ناموفق: ${friendly(e)}", 14f).apply { setTextColor(Color.RED) })
+        }
+    }
+
+    private fun showChat() {
+        val cid = activeCid ?: return
+        stopChatOnly()
+        val root = base()
+        val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        val back = btn("‹").apply { textSize = 28f }
+        header.addView(back, LinearLayout.LayoutParams(54, 54))
+        header.addView(t(chatUser, 22f, true), LinearLayout.LayoutParams(0, -2, 1f))
+        val attach = btn("📎")
+        header.addView(attach)
+        back.setOnClickListener { showHome() }
+        attach.setOnClickListener { pickAttachment(cid) }
+        root.addView(header, lp(-1, 0, 6))
+
+        val sv = ScrollView(this)
+        val messageList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(4, 8, 4, 8) }
+        sv.addView(messageList)
+        root.addView(sv, LinearLayout.LayoutParams(-1, 0, 1f))
+        list = messageList
+        scroll = sv
+
+        val composer = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        val input = inp("پیام بنویس...").apply { maxLines = 4; minLines = 1 }
+        val send = btn("ارسال")
+        composer.addView(input, LinearLayout.LayoutParams(0, -2, 1f))
+        composer.addView(send)
+        root.addView(composer, lp(-1, 8, 0))
+        setContentView(root)
+        send.setOnClickListener { sendText(cid, input, send) }
+        input.setOnEditorActionListener { _, action, _ ->
+            if (action == EditorInfo.IME_ACTION_DONE) { send.performClick(); true } else false
+        }
+        scope.launch { refreshMessages(cid) }
+        startChatRealtime(cid)
+    }
+
+    private fun sendText(cid: String, input: EditText, button: Button) {
+        val body = input.text.toString().trim()
+        if (body.isEmpty()) return
+        if (body.length > 4000) { input.error = "حداکثر ۴۰۰۰ کاراکتر"; return }
+        button.isEnabled = false
+        scope.launch {
+            try {
+                val me = uid ?: error("جلسه وجود ندارد")
+                withTimeout(10000) {
+                    ncSupabase.from("messages").insert(NCMessage(conversation_id = cid, sender_id = me, body = body))
+                }
+                input.text.clear()
+                refreshMessages(cid)
+            } catch (e: Exception) {
+                Toast.makeText(this@NimChatActivity, "ارسال ناموفق: ${friendly(e)}", Toast.LENGTH_LONG).show()
+            } finally {
+                button.isEnabled = true
+            }
+        }
+    }
+
+    private fun startChatRealtime(cid: String) {
+        rt = scope.launch {
+            try {
+                ncSupabase.realtime.connect()
+                val channel = ncSupabase.realtime.channel("chat-$cid")
+                val inserts = channel.postgresChangeFlow<PostgresAction.Insert>(schema = "public") { table = "messages" }
+                val updates = channel.postgresChangeFlow<PostgresAction.Update>(schema = "public") { table = "messages" }
+                val deletes = channel.postgresChangeFlow<PostgresAction.Delete>(schema = "public") { table = "messages" }
+                channel.subscribe()
+                merge(inserts, updates, deletes).collect { refreshMessages(cid) }
+            } catch (_: Exception) {}
+        }
+        fallback = scope.launch {
+            while (isActive) {
+                delay(6000)
+                refreshMessages(cid)
+            }
+        }
+    }
+
+    private suspend fun refreshMessages(cid: String) {
+        try {
+            var messages = withTimeout(10000) {
+                ncSupabase.from("messages").select { filter { eq("conversation_id", cid) }; order("created_at", Order.ASCENDING) }.decodeList<NCMessage>()
+            }
+            if (messages.any { it.sender_id != uid && it.read_at == null }) {
+                withTimeout(10000) { ncSupabase.postgrest.rpc("mark_conversation_read", MarkConversationReadParams(cid)) }
+                messages = withTimeout(10000) {
+                    ncSupabase.from("messages").select { filter { eq("conversation_id", cid) }; order("created_at", Order.ASCENDING) }.decodeList<NCMessage>()
+                }
+            }
+            val container = list ?: return
+            container.removeAllViews()
+            messages.forEach { addMessage(container, it) }
+            scroll?.post { scroll?.fullScroll(View.FOCUS_DOWN) }
+        } catch (_: Exception) {}
+    }
+
+    private fun addMessage(parent: LinearLayout, message: NCMessage) {
+        val mine = message.sender_id == uid
+        val row = LinearLayout(this).apply { gravity = if (mine) Gravity.END else Gravity.START; setPadding(4, 4, 4, 4) }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(15, 9, 15, 8)
+            setBackgroundColor(if (mine) Color.rgb(220, 235, 255) else Color.WHITE)
+        }
+        if (!message.body.isNullOrBlank()) box.addView(t(message.body.orEmpty(), 16f))
+        message.attachment_path?.let { path ->
+            val fileButton = btn("📎 ${message.attachment_name ?: "فایل"}")
+            fileButton.setOnClickListener { openAttachment(message) }
+            box.addView(fileButton, lp(-1, 5, 0))
+        }
+        val meta = LinearLayout(this).apply { gravity = Gravity.END }
+        meta.addView(t(formatTime(message.created_at), 10f).apply { setTextColor(Color.GRAY) })
+        if (mine) {
+            if (message.updated_at != null && message.created_at != null && message.updated_at != message.created_at) {
+                meta.addView(t(" ویرایش‌شده", 9f).apply { setTextColor(Color.GRAY) })
+            }
+            meta.addView(t(if (message.read_at != null) " ✓✓ خوانده شد" else " ✓ ارسال شد", 9f).apply {
+                setTextColor(if (message.read_at != null) Color.rgb(35, 110, 210) else Color.GRAY)
+            })
+            val actions = btn("⋮")
+            actions.setOnClickListener { messageActions(message) }
+            meta.addView(actions, LinearLayout.LayoutParams(42, 40))
+        }
+        box.addView(meta, lp(-1, 3, 0))
+        row.addView(box, LinearLayout.LayoutParams(-2, -2))
+        parent.addView(row)
+    }
+
+    private fun messageActions(message: NCMessage) {
+        val options = if (message.body.isNullOrBlank()) arrayOf("حذف پیام", "لغو") else arrayOf("ویرایش پیام", "حذف پیام", "لغو")
+        AlertDialog.Builder(this).setItems(options) { _, which ->
+            if (message.body.isNullOrBlank()) {
+                if (which == 0) confirmDelete(message)
+            } else {
+                when (which) {
+                    0 -> showEditDialog(message)
+                    1 -> confirmDelete(message)
+                }
+            }
+        }.show()
+    }
+
+    private fun showEditDialog(message: NCMessage) {
+        val field = inp("متن پیام").apply { setText(message.body.orEmpty()); setSelection(text.length); maxLines = 6 }
+        AlertDialog.Builder(this)
+            .setTitle("ویرایش پیام")
+            .setView(field)
+            .setNegativeButton("لغو", null)
+            .setPositiveButton("ذخیره") { _, _ ->
+                val value = field.text.toString().trim()
+                if (value.isNotEmpty() && value.length <= 4000) {
+                    scope.launch {
+                        try {
+                            ncSupabase.from("messages").update({ set("body", value) }) { filter { eq("id", message.id ?: "") } }
+                            activeCid?.let { refreshMessages(it) }
+                        } catch (e: Exception) {
+                            Toast.makeText(this@NimChatActivity, friendly(e), Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            }.show()
+    }
+
+    private fun confirmDelete(message: NCMessage) {
+        AlertDialog.Builder(this)
+            .setTitle("حذف پیام")
+            .setMessage("این پیام حذف شود؟")
+            .setNegativeButton("لغو", null)
+            .setPositiveButton("حذف") { _, _ ->
+                scope.launch {
+                    try {
+                        ncSupabase.from("messages").delete { filter { eq("id", message.id ?: "") } }
+                        activeCid?.let { refreshMessages(it) }
+                    } catch (e: Exception) {
+                        Toast.makeText(this@NimChatActivity, friendly(e), Toast.LENGTH_LONG).show()
+                    }
+                }
+            }.show()
+    }
+
+    private fun pickAttachment(cid: String) {
+        pendingFileCid = cid
+        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+        }, pickFile)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != pickFile || resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        val cid = pendingFileCid ?: return
+        scope.launch { uploadAttachment(cid, uri) }
+    }
+
+    private suspend fun uploadAttachment(cid: String, uri: Uri) {
+        try {
+            val resolver = contentResolver
+            val size = resolver.query(uri, null, null, null, null)?.use { cursor ->
+                val index = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (cursor.moveToFirst() && index >= 0) cursor.getLong(index) else -1L
+            } ?: -1L
+            if (size > 10L * 1024L * 1024L) error("حداکثر حجم فایل ۱۰ مگابایت است")
+            val bytes = resolver.openInputStream(uri)?.use { it.readBytes() } ?: error("خواندن فایل ناموفق بود")
+            if (bytes.size > 10 * 1024 * 1024) error("حداکثر حجم فایل ۱۰ مگابایت است")
+            val name = queryDisplayName(uri) ?: "file"
+            val mime = resolver.getType(uri) ?: "application/octet-stream"
+            val me = uid ?: error("جلسه وجود ندارد")
+            val path = "$me/${UUID.randomUUID()}-${name.replace(Regex("[^A-Za-z0-9._-]"), "_")}" 
+            withContext(Dispatchers.IO) {
+                ncSupabase.storage.from("chat-files").upload(path, bytes)
+            }
+            withTimeout(10000) {
+                ncSupabase.from("messages").insert(
+                    NCMessage(
+                        conversation_id = cid,
+                        sender_id = me,
+                        body = null,
+                        attachment_path = path,
+                        attachment_name = name,
+                        attachment_mime = mime,
+                        attachment_size = bytes.size.toLong()
+                    )
+                )
+            }
+            refreshMessages(cid)
+        } catch (e: Exception) {
+            Toast.makeText(this@NimChatActivity, "ارسال فایل ناموفق: ${friendly(e)}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun queryDisplayName(uri: Uri): String? = contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+        val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (cursor.moveToFirst() && index >= 0) cursor.getString(index) else null
+    }
+
+    private fun openAttachment(message: NCMessage) {
+        val path = message.attachment_path ?: return
+        scope.launch {
+            try {
+                val bytes = withContext(Dispatchers.IO) { ncSupabase.storage.from("chat-files").downloadAuthenticated(path) }
+                val file = File(cacheDir, message.attachment_name ?: "attachment")
+                file.writeBytes(bytes)
+                val uri = FileProvider.getUriForFile(this@NimChatActivity, "${BuildConfig.APPLICATION_ID}.fileprovider", file)
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, message.attachment_mime ?: "application/octet-stream")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                startActivity(intent)
+            } catch (e: Exception) {
+                Toast.makeText(this@NimChatActivity, "باز کردن فایل ناموفق: ${friendly(e)}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun showProfileDialog() {
+        scope.launch {
+            try {
+                val id = uid ?: return@launch
+                val current = withTimeout(10000) { ncSupabase.from("profiles").select { filter { eq("id", id) } }.decodeSingleOrNull<NCProfile>() }
+                val field = inp("نام نمایشی").apply { setText(current?.display_name ?: username) }
+                AlertDialog.Builder(this@NimChatActivity)
+                    .setTitle("پروفایل")
+                    .setView(field)
+                    .setNegativeButton("لغو", null)
+                    .setPositiveButton("ذخیره") { _, _ ->
+                        val value = field.text.toString().trim()
+                        scope.launch {
+                            try {
+                                ncSupabase.from("profiles").update({ set("display_name", value.ifBlank { null }) }) { filter { eq("id", id) } }
+                                showHome()
+                            } catch (e: Exception) {
+                                Toast.makeText(this@NimChatActivity, friendly(e), Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }.show()
+            } catch (e: Exception) {
+                Toast.makeText(this@NimChatActivity, friendly(e), Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun startHomeRealtime() {
+        homeRt?.cancel()
+        homeRt = scope.launch {
+            try {
+                ncSupabase.realtime.connect()
+                val channel = ncSupabase.realtime.channel("home-${uid ?: "user"}")
+                val inserts = channel.postgresChangeFlow<PostgresAction.Insert>(schema = "public") { table = "messages" }
+                val updates = channel.postgresChangeFlow<PostgresAction.Update>(schema = "public") { table = "messages" }
+                val deletes = channel.postgresChangeFlow<PostgresAction.Delete>(schema = "public") { table = "messages" }
+                channel.subscribe()
+                merge(inserts, updates, deletes).collect {
+                    loadConversations(list ?: return@collect)
+                    if (it is PostgresAction.Insert) notifyIncoming(it.record)
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun notifyIncoming(record: Map<String, Any?>) {
+        val sender = record["sender_id"]?.toString() ?: return
+        if (sender == uid) return
+        val conversation = record["conversation_id"]?.toString() ?: return
+        if (conversation == activeCid) return
+        val body = record["body"]?.toString()?.takeIf { it.isNotBlank() } ?: "فایل جدید"
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2001)
+            return
+        }
+        val notification = NotificationCompat.Builder(this, channelId)
+            .setSmallIcon(android.R.drawable.ic_dialog_email)
+            .setContentTitle("NimChat")
+            .setContentText(body)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .build()
+        try { NotificationManagerCompat.from(this).notify(conversation.hashCode(), notification) } catch (_: SecurityException) {}
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(channelId, "پیام‌های NimChat", NotificationManager.IMPORTANCE_DEFAULT)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        }
+    }
+
+    private fun stopChatOnly() {
+        rt?.cancel(); fallback?.cancel(); rt = null; fallback = null
+        try { ncSupabase.realtime.removeAllChannels() } catch (_: Exception) {}
+    }
+
+    private fun stopAll() {
+        stopChatOnly()
+        homeRt?.cancel(); homeRt = null
+        try { ncSupabase.realtime.removeAllChannels() } catch (_: Exception) {}
+    }
+
+    private fun friendly(e: Exception): String = e.message?.replace(Regex("\\s+"), " ")?.take(220) ?: "خطای نامشخص"
+
+    private fun formatTime(value: String?): String {
+        if (value.isNullOrBlank()) return ""
+        return try {
+            val input = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSSSSXXX", Locale.US)
+            val date = input.parse(value) ?: return value.take(16)
+            SimpleDateFormat("HH:mm", Locale.getDefault()).format(date)
+        } catch (_: Exception) {
+            try {
+                val input = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US)
+                val date = input.parse(value) ?: return value.take(16)
+                SimpleDateFormat("HH:mm", Locale.getDefault()).format(date)
+            } catch (_: Exception) { value.take(16) }
+        }
+    }
 }
