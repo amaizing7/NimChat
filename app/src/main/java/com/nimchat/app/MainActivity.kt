@@ -18,6 +18,7 @@ import io.github.jan.supabase.realtime.Realtime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -56,33 +57,33 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        showLoading()
-        scope.launch {
-            try {
-                var user = supabase.auth.currentUserOrNull()
-                if (user == null) {
-                    supabase.auth.signInAnonymously()
-                    user = supabase.auth.currentUserOrNull()
-                }
-                currentUser = user?.id
-                if (currentUser == null) {
-                    showAuth("احراز هویت ناموفق بود")
-                    return@launch
-                }
-                showAuth()
-            } catch (e: Exception) {
-                showAuth("اتصال Supabase برقرار نشد: ${e.message ?: "خطای نامشخص"}")
-            }
+        currentUser = supabase.auth.currentUserOrNull()?.id
+        if (currentUser != null) {
+            loadExistingProfile()
+        } else {
+            showAuth()
         }
     }
 
-    private fun showLoading() {
-        val root = base().apply { gravity = Gravity.CENTER_HORIZONTAL }
-        root.addView(text("NimChat", 34f, true), lp())
-        root.addView(text("در حال اتصال به سرور...", 17f), lp(0, 12, 0, 20))
-        val progress = ProgressBar(this)
-        root.addView(progress, lp(-2, 0, 0, 0))
-        setContentView(root)
+    private fun loadExistingProfile() {
+        scope.launch {
+            try {
+                val uid = currentUser ?: return@launch
+                val profile = withTimeout(8000) {
+                    supabase.from("profiles").select {
+                        filter { eq("id", uid) }
+                    }.decodeSingleOrNull<Profile>()
+                }
+                if (profile != null) {
+                    currentUsername = profile.username
+                    showHome()
+                } else {
+                    showAuth()
+                }
+            } catch (_: Exception) {
+                showAuth()
+            }
+        }
     }
 
     private fun base(): LinearLayout = LinearLayout(this).apply {
@@ -114,41 +115,40 @@ class MainActivity : Activity() {
         val root = base().apply { gravity = Gravity.CENTER_HORIZONTAL }
         root.addView(text("NimChat", 34f, true), lp())
         root.addView(text("پیام‌رسان واقعی با Supabase", 17f), lp(0, 12, 0, 25))
-
         if (error != null) {
             root.addView(text(error, 14f).apply { setTextColor(Color.rgb(180, 40, 40)) }, lp(0, 0, 0, 15))
         }
-
         val name = input("نام کاربری")
         root.addView(name, lp(-1, 0, 0, 14))
         val enter = button("ورود به NimChat")
         root.addView(enter, lp(-1, 0, 0, 10))
-
         enter.setOnClickListener {
             val username = name.text.toString().trim().lowercase()
             if (username.length < 2) {
                 name.error = "حداقل ۲ حرف وارد کن"
                 return@setOnClickListener
             }
+            enter.isEnabled = false
+            enter.text = "در حال اتصال..."
             scope.launch {
                 try {
-                    val uid = currentUser ?: run {
-                        name.error = "اتصال هنوز آماده نیست"
-                        return@launch
+                    var uid = currentUser
+                    if (uid == null) {
+                        withTimeout(10000) {
+                            supabase.auth.signInAnonymously()
+                        }
+                        uid = supabase.auth.currentUserOrNull()?.id
                     }
+                    if (uid == null) throw IllegalStateException("احراز هویت انجام نشد")
+                    currentUser = uid
                     supabase.from("profiles").insert(Profile(uid, username, username))
                     currentUsername = username
                     showHome()
                 } catch (e: Exception) {
-                    try {
-                        val profile = supabase.from("profiles").select {
-                            filter { eq("id", currentUser ?: "") }
-                        }.decodeSingle<Profile>()
-                        currentUsername = profile.username
-                        showHome()
-                    } catch (_: Exception) {
-                        name.error = e.message ?: "ثبت نام کاربر ناموفق بود"
-                    }
+                    enter.isEnabled = true
+                    enter.text = "ورود به NimChat"
+                    val msg = e.message ?: "خطای نامشخص"
+                    showAuth("ورود انجام نشد: $msg")
                 }
             }
         }
@@ -165,7 +165,7 @@ class MainActivity : Activity() {
         header.addView(logout, LinearLayout.LayoutParams(-2, -2))
         logout.setOnClickListener {
             scope.launch {
-                supabase.auth.signOut()
+                try { supabase.auth.signOut() } catch (_: Exception) {}
                 currentUser = null
                 currentUsername = ""
                 showAuth()
@@ -173,7 +173,6 @@ class MainActivity : Activity() {
         }
         root.addView(header, lp(-1, 0, 0, 24))
         root.addView(text("سلام $currentUsername 👋", 20f, true), lp(0, 0, 0, 20))
-
         val search = input("نام کاربری برای شروع گفتگو")
         root.addView(search, lp(-1, 0, 0, 12))
         val start = button("＋  شروع گفتگوی واقعی")
@@ -186,7 +185,6 @@ class MainActivity : Activity() {
             }
             scope.launch { openConversation(username) }
         }
-
         root.addView(text("پیام‌رسانی", 18f, true), lp(0, 0, 0, 8))
         root.addView(text("پیام‌ها اکنون در دیتابیس Supabase ذخیره می‌شوند.", 14f), lp())
         setContentView(root)
@@ -197,7 +195,6 @@ class MainActivity : Activity() {
             val target = supabase.from("profiles").select {
                 filter { eq("username", targetUsername) }
             }.decodeSingleOrNull<Profile>()
-
             if (target == null) {
                 Toast.makeText(this, "این کاربر پیدا نشد.", Toast.LENGTH_SHORT).show()
                 return
@@ -206,7 +203,6 @@ class MainActivity : Activity() {
                 Toast.makeText(this, "نام کاربری خودت را وارد نکن.", Toast.LENGTH_SHORT).show()
                 return
             }
-
             val conversation = supabase.from("conversations").insert(Conversation()) { select() }.decodeSingle<Conversation>()
             val conversationId = conversation.id ?: return
             supabase.from("conversation_members").insert(Member(conversationId, currentUser!!))
@@ -230,7 +226,6 @@ class MainActivity : Activity() {
         header.addView(text("● آنلاین", 13f).apply { setTextColor(Color.rgb(40, 150, 80)) })
         back.setOnClickListener { showHome() }
         root.addView(header, lp(-1, 0, 0, 14))
-
         val scroll = ScrollView(this)
         val list = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -238,14 +233,12 @@ class MainActivity : Activity() {
         }
         scroll.addView(list)
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-
         val composer = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         val messageInput = input("پیام بنویس...")
         val send = button("ارسال")
         composer.addView(messageInput, LinearLayout.LayoutParams(0, -2, 1f))
         composer.addView(send, LinearLayout.LayoutParams(-2, -2))
         root.addView(composer, lp(-1, 10, 0, 0))
-
         send.setOnClickListener {
             val value = messageInput.text.toString().trim()
             if (value.isEmpty()) return@setOnClickListener
@@ -261,7 +254,6 @@ class MainActivity : Activity() {
                 }
             }
         }
-
         setContentView(root)
         scope.launch {
             try {
