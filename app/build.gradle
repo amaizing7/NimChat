@@ -31,11 +31,11 @@ android {
 
 dependencies {
     implementation 'androidx.core:core-ktx:1.15.0'
-    implementation 'io.github.jan-tennert.supabase:postgrest-kt:3.1.4'
-    implementation 'io.github.jan-tennert.supabase:auth-kt:3.1.4'
-    implementation 'io.github.jan-tennert.supabase:realtime-kt:3.1.4'
-    implementation 'io.github.jan-tennert.supabase:storage-kt:3.1.4'
-    implementation 'io.ktor:ktor-client-android:3.0.3'
+    implementation 'io.github.jan-tennert.supabase:postgrest-kt:3.8.0'
+    implementation 'io.github.jan-tennert.supabase:auth-kt:3.8.0'
+    implementation 'io.github.jan-tennert.supabase:realtime-kt:3.8.0'
+    implementation 'io.github.jan-tennert.supabase:storage-kt:3.8.0'
+    implementation 'io.ktor:ktor-client-android:3.3.0'
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'androidx.test:core:1.6.1'
 }
