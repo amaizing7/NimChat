@@ -14,6 +14,7 @@ object NCFeatureHelpers {
     const val MAX_ATTACHMENT_BYTES = MAX_STANDARD_BYTES
     private const val SOURCE_PREFS = "nimchat_attachment_sources"
     private val sourceUris = ConcurrentHashMap<String, Uri>()
+    @Volatile private var appContext: Context? = null
 
     fun maxAttachmentBytes(mime: String?, premium: Boolean): Long =
         if (mime.orEmpty().startsWith("image/")) MAX_PHOTO_BYTES
@@ -27,6 +28,7 @@ object NCFeatureHelpers {
 
     /** Registers the source and creates only a sparse metadata file; payload bytes are not copied. */
     fun copyUriToCache(context: Context, uri: Uri, name: String, mime: String? = null, premium: Boolean = false): File {
+        appContext = context.applicationContext
         val size = querySize(context, uri) ?: error("حجم فایل قابل تشخیص نیست")
         validateAttachmentSize(size, mime, premium)
         val safe = name.replace(Regex("[^A-Za-z0-9._-]"), "_").take(120).ifBlank { "attachment" }
@@ -48,12 +50,20 @@ object NCFeatureHelpers {
         }
     }
 
-    fun sourceUri(context: Context, metadataFile: File): Uri? =
-        sourceUris[metadataFile.absolutePath]
-            ?: context.getSharedPreferences(SOURCE_PREFS, Context.MODE_PRIVATE)
-                .getString(metadataFile.absolutePath, null)?.let(Uri::parse)
+    fun sourceUri(metadataFile: File): Uri? {
+        val context = appContext
+        return sourceUris[metadataFile.absolutePath]
+            ?: context?.getSharedPreferences(SOURCE_PREFS, Context.MODE_PRIVATE)
+                ?.getString(metadataFile.absolutePath, null)?.let(Uri::parse)
+    }
 
-    fun clearSource(context: Context, metadataFile: File) {
+    fun clearSource(metadataFile: File) {
+        sourceUris.remove(metadataFile.absolutePath)
+        appContext?.getSharedPreferences(SOURCE_PREFS, Context.MODE_PRIVATE)
+            ?.edit()?.remove(metadataFile.absolutePath)?.apply()
+    }
+
+    private fun clearSource(context: Context, metadataFile: File) {
         sourceUris.remove(metadataFile.absolutePath)
         context.getSharedPreferences(SOURCE_PREFS, Context.MODE_PRIVATE)
             .edit().remove(metadataFile.absolutePath).apply()
