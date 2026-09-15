@@ -16,19 +16,19 @@ object NCFeatureHelpers {
     @Volatile private var appContext: Context? = null
 
     /** All non-image files use the same 4 GiB limit for every user. */
-    fun maxAttachmentBytes(mime: String?, premium: Boolean = false): Long =
+    fun maxAttachmentBytes(mime: String?): Long =
         if (mime.orEmpty().startsWith("image/")) MAX_PHOTO_BYTES else MAX_STANDARD_BYTES
 
-    fun validateAttachmentSize(size: Long, mime: String? = null, premium: Boolean = false) {
+    fun validateAttachmentSize(size: Long, mime: String? = null) {
         require(size >= 0) { "حجم فایل نامعتبر است" }
-        require(size <= maxAttachmentBytes(mime, premium)) { "حجم فایل از سقف مجاز بیشتر است" }
+        require(size <= maxAttachmentBytes(mime)) { "حجم فایل از سقف مجاز بیشتر است" }
     }
 
     /** Registers the source and creates only a sparse metadata file; payload bytes are not copied. */
-    fun copyUriToCache(context: Context, uri: Uri, name: String, mime: String? = null, premium: Boolean = false): File {
+    fun copyUriToCache(context: Context, uri: Uri, name: String, mime: String? = null): File {
         appContext = context.applicationContext
         val size = querySize(context, uri) ?: error("حجم فایل قابل تشخیص نیست")
-        validateAttachmentSize(size, mime, premium)
+        validateAttachmentSize(size, mime)
         val safe = name.replace(Regex("[^A-Za-z0-9._-]"), "_").take(120).ifBlank { "attachment" }
         val file = File(context.cacheDir, "nc_${System.currentTimeMillis()}_$safe")
         try {
@@ -64,7 +64,7 @@ object NCFeatureHelpers {
     private fun clearSource(context: Context, metadataFile: File) {
         sourceUris.remove(metadataFile.absolutePath)
         context.getSharedPreferences(SOURCE_PREFS, Context.MODE_PRIVATE)
-            .edit().remove(metadataFile.absolutePath).apply()
+            ?.edit().remove(metadataFile.absolutePath).apply()
     }
 
     private fun querySize(context: Context, uri: Uri): Long? =
