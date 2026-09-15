@@ -27,6 +27,24 @@ android {
     }
 
     kotlinOptions { jvmTarget = '17' }
+
+    signingConfigs {
+        release {
+            def keystorePath = System.getenv('NIMCHAT_KEYSTORE_PATH')
+            if (keystorePath) {
+                storeFile file(keystorePath)
+                storePassword System.getenv('NIMCHAT_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('NIMCHAT_KEY_ALIAS')
+                keyPassword System.getenv('NIMCHAT_KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+        }
+    }
 }
 
 configurations.configureEach {
