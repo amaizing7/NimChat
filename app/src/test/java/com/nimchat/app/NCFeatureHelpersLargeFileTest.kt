@@ -12,7 +12,7 @@ class NCFeatureHelpersLargeFileTest {
         )
         assertEquals(
             NCFeatureHelpers.MAX_STANDARD_BYTES,
-            NCFeatureHelpers.maxAttachmentBytes("application/zip")
+            NCFeatureHelpers.maxAttachmentBytes("application/zip", true)
         )
     }
 
