@@ -3,8 +3,6 @@ name: Apply Realtime Optimization
 on:
   push:
     branches: [ main ]
-    paths:
-      - 'app/src/main/java/com/nimchat/app/NimChatActivity.kt'
   workflow_dispatch:
 
 permissions:
@@ -22,11 +20,8 @@ jobs:
           from pathlib import Path
           p = Path('app/src/main/java/com/nimchat/app/NimChatActivity.kt')
           s = p.read_text()
-          old = '''    private var failedOutgoing = linkedMapOf<String, NCFailedMessage>()'''
-          new = '''    private val failedOutgoing = linkedMapOf<String, NCFailedMessage>()
-    private var refreshQueued = false'''
-          if old in s:
-              s = s.replace(old, new, 1)
+          if 'filter = "conversation_id=eq.$cid"' in s and 'private fun queueRefresh(cid: String)' in s:
+              raise SystemExit(0)
           old = '''                val inserts = channel.postgresChangeFlow<PostgresAction.Insert>(schema = "public") { table = "messages" }
                 val updates = channel.postgresChangeFlow<PostgresAction.Update>(schema = "public") { table = "messages" }
                 val deletes = channel.postgresChangeFlow<PostgresAction.Delete>(schema = "public") { table = "messages" }'''
@@ -74,19 +69,22 @@ jobs:
 
     private suspend fun refreshMessages(cid: String) {'''
           if old not in s:
-              raise SystemExit('chat fallback block not found')
+              raise SystemExit('chat refresh block not found')
           s = s.replace(old, new, 1)
-          old = '''    private fun stopChatOnly() {
+          marker = '    private var failedOutgoing = linkedMapOf<String, NCFailedMessage>()'
+          if marker in s:
+              s = s.replace(marker, '    private val failedOutgoing = linkedMapOf<String, NCFailedMessage>()\n    private var refreshQueued = false', 1)
+          marker = '''    private fun stopChatOnly() {
         rt?.cancel(); fallback?.cancel(); rt = null; fallback = null
         try { ncSupabase.realtime.removeAllChannels() } catch (_: Exception) {}
     }'''
-          new = '''    private fun stopChatOnly() {
+          replacement = '''    private fun stopChatOnly() {
         rt?.cancel(); fallback?.cancel(); rt = null; fallback = null
         refreshQueued = false
         try { ncSupabase.realtime.removeAllChannels() } catch (_: Exception) {}
     }'''
-          if old in s:
-              s = s.replace(old, new, 1)
+          if marker in s:
+              s = s.replace(marker, replacement, 1)
           p.write_text(s)
           PY
       - name: Commit optimized source
