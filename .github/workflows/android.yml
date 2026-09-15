@@ -5,6 +5,9 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -18,6 +21,84 @@ jobs:
           java-version: '17'
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
+      - name: Apply chat realtime optimization once
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('app/src/main/java/com/nimchat/app/NimChatActivity.kt')
+          s = p.read_text()
+          if 'filter = "conversation_id=eq.$cid"' in s and 'private fun queueRefresh(cid: String)' in s:
+              raise SystemExit(0)
+          old = '''                val inserts = channel.postgresChangeFlow<PostgresAction.Insert>(schema = "public") { table = "messages" }
+                val updates = channel.postgresChangeFlow<PostgresAction.Update>(schema = "public") { table = "messages" }
+                val deletes = channel.postgresChangeFlow<PostgresAction.Delete>(schema = "public") { table = "messages" }'''
+          new = '''                val inserts = channel.postgresChangeFlow<PostgresAction.Insert>(schema = "public") {
+                    table = "messages"
+                    filter = "conversation_id=eq.$cid"
+                }
+                val updates = channel.postgresChangeFlow<PostgresAction.Update>(schema = "public") {
+                    table = "messages"
+                    filter = "conversation_id=eq.$cid"
+                }
+                val deletes = channel.postgresChangeFlow<PostgresAction.Delete>(schema = "public") {
+                    table = "messages"
+                    filter = "conversation_id=eq.$cid"
+                }'''
+          if old not in s:
+              raise SystemExit('chat realtime block not found')
+          s = s.replace(old, new, 1)
+          old = '''                merge(inserts, updates, deletes).collect { refreshMessages(cid) }
+            } catch (_: Exception) {}
+        }
+        fallback = scope.launch {
+            while (isActive) {
+                delay(6000)
+                refreshMessages(cid)
+            }
+        }
+    }
+
+    private suspend fun refreshMessages(cid: String) {'''
+          new = '''                merge(inserts, updates, deletes).collect { queueRefresh(cid) }
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun queueRefresh(cid: String) {
+        if (refreshQueued) return
+        refreshQueued = true
+        scope.launch {
+            delay(150)
+            refreshQueued = false
+            refreshMessages(cid)
+        }
+    }
+
+    private suspend fun refreshMessages(cid: String) {'''
+          if old not in s:
+              raise SystemExit('chat refresh block not found')
+          s = s.replace(old, new, 1)
+          marker = '    private val failedOutgoing = linkedMapOf<String, NCFailedMessage>()'
+          if marker in s and 'private var refreshQueued' not in s:
+              s = s.replace(marker, marker + '\n    private var refreshQueued = false', 1)
+          marker = '''    private fun stopChatOnly() {
+        rt?.cancel(); fallback?.cancel(); rt = null; fallback = null
+        try { ncSupabase.realtime.removeAllChannels() } catch (_: Exception) {}
+    }'''
+          replacement = '''    private fun stopChatOnly() {
+        rt?.cancel(); fallback?.cancel(); rt = null; fallback = null
+        refreshQueued = false
+        try { ncSupabase.realtime.removeAllChannels() } catch (_: Exception) {}
+    }'''
+          if marker in s:
+              s = s.replace(marker, replacement, 1)
+          p.write_text(s)
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/com/nimchat/app/NimChatActivity.kt
+          git diff --cached --quiet || git commit -m 'Optimize chat realtime subscriptions [realtime-optimized]'
+          git push
       - name: Run unit tests, lint, and build
         run: gradle test lintDebug assembleDebug --stacktrace
       - name: Upload APK
