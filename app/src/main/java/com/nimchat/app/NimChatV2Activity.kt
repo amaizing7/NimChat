@@ -1,0 +1,75 @@
+package com.nimchat.app
+
+import android.Manifest
+import android.app.*
+import android.content.*
+import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
+import android.graphics.Color
+import android.graphics.Typeface
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.provider.OpenableColumns
+import android.view.Gravity
+import android.view.View
+import android.widget.*
+import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import io.github.jan.supabase.auth.Auth
+import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.auth.signInAnonymously
+import io.github.jan.supabase.createSupabaseClient
+import io.github.jan.supabase.postgrest.Postgrest
+import io.github.jan.supabase.postgrest.from
+import io.github.jan.supabase.postgrest.query.Order
+import io.github.jan.supabase.realtime.PostgresAction
+import io.github.jan.supabase.realtime.Realtime
+import io.github.jan.supabase.storage.Storage
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.merge
+import kotlinx.serialization.Serializable
+import java.util.*
+
+@Serializable private data class V2Profile(val id:String,val username:String,val display_name:String?=null)
+@Serializable private data class V2Message(val id:String,val conversation_id:String,val sender_id:String,val body:String?=null,val created_at:String?=null,val updated_at:String?=null,val read_at:String?=null,val attachment_path:String?=null,val attachment_name:String?=null,val attachment_mime:String?=null,val attachment_size:Long?=null)
+@Serializable private data class V2Conversation(val conversation_id:String,val other_user_id:String,val other_username:String,val other_display_name:String?=null,val last_message:String?=null,val last_message_at:String?=null,val unread_count:Long=0)
+@Serializable private data class V2Create(val target_user_id:String)
+@Serializable private data class V2Read(val target_conversation: String)
+
+private val v2Supabase=createSupabaseClient(BuildConfig.SUPABASE_URL,BuildConfig.SUPABASE_KEY){install(Auth);install(Postgrest);install(Realtime);install(Storage)}
+
+class NimChatV2Activity:Activity(){
+ private val scope=CoroutineScope(SupervisorJob()+Dispatchers.Main)
+ private var uid:String?=null;private var user="";private var cid:String?=null;private var other="";private var rows:LinearLayout?=null;private var scroll:ScrollView?=null;private var chatJob:Job?=null;private var homeJob:Job?=null;private var poll:Job?=null;private val channel="nimchat_messages_v2";private var pickedUri:Uri?=null;private var pickedName="";private var pickedMime="application/octet-stream"
+ override fun onCreate(b:Bundle?){super.onCreate(b);makeChannel();uid=v2Supabase.auth.currentUserOrNull()?.id;if(uid==null)auth() else loadProfile()}
+ override fun onDestroy(){chatJob?.cancel();homeJob?.cancel();poll?.cancel();scope.cancel();super.onDestroy()}
+ private fun base()=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(18,18,18,12);setBackgroundColor(Color.rgb(247,248,250))}
+ private fun text(s:String,size:Float,bold:Boolean=false)=TextView(this).apply{text=s;textSize=size;if(bold)typeface=Typeface.DEFAULT_BOLD}
+ private fun button(s:String)=Button(this).apply{text=s;isAllCaps=false}
+ private fun input(h:String)=EditText(this).apply{hint=h;textSize=16f;maxLines=1}
+ private fun params(w:Int=-1)=LinearLayout.LayoutParams(w,LinearLayout.LayoutParams.WRAP_CONTENT)
+ private fun auth(error:String?=null){val r=base();r.gravity=Gravity.CENTER_HORIZONTAL;r.addView(text("NimChat",32f,true));if(error!=null)r.addView(text(error,14f));val e=input("نام کاربری");r.addView(e,params());val b=button("ورود");r.addView(b,params());setContentView(r);b.setOnClickListener{val u=e.text.toString().trim().lowercase(Locale.ROOT);if(!u.matches(Regex("[a-z0-9_]{2,30}"))){e.error="۲ تا ۳۰ کاراکتر";return@setOnClickListener};b.isEnabled=false;scope.launch{try{val id=ensureAuth();val p=v2Supabase.from("profiles").select{filter{eq("id",id)}}.decodeSingleOrNull<V2Profile>();if(p==null)v2Supabase.from("profiles").insert(V2Profile(id,u,u)) else if(p.username!=u)error("این حساب نام کاربری دیگری دارد");uid=id;user=u;home()}catch(x:Exception){b.isEnabled=true;auth(x.message?:"خطا")}}}}
+ private suspend fun ensureAuth():String{val x=v2Supabase.auth.currentUserOrNull()?.id;if(x!=null)return x;withTimeout(12000){v2Supabase.auth.signInAnonymously()};return v2Supabase.auth.currentUserOrNull()?.id?:error("احراز هویت ناموفق")}
+ private fun loadProfile()=scope.launch{try{val id=uid?:return@launch;val p=v2Supabase.from("profiles").select{filter{eq("id",id)}}.decodeSingleOrNull<V2Profile>();if(p==null)auth("پروفایل پیدا نشد")else{user=p.username;home()}}catch(x:Exception){auth(x.message)}}
+ private fun home(){chatJob?.cancel();poll?.cancel();val r=base();val top=LinearLayout(this);top.addView(text("NimChat",28f,true),LinearLayout.LayoutParams(0,-2,1f));top.addView(button("پروفایل").apply{setOnClickListener{profile()}});top.addView(button("خروج").apply{setOnClickListener{scope.launch{try{v2Supabase.auth.signOut()}catch(_:Exception){};uid=null;auth()}}});r.addView(top);r.addView(text("سلام $user 👋",18f,true));val q=input("نام کاربری برای گفتگوی جدید");r.addView(q);r.addView(button("＋ شروع گفتگو").apply{setOnClickListener{start(q)}});r.addView(text("گفتگوها",18f,true));val sv=ScrollView(this);val l=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};sv.addView(l);r.addView(sv,LinearLayout.LayoutParams(-1,0,1f));rows=l;setContentView(r);scope.launch{loadHome()};homeJob=scope.launch{try{v2Supabase.realtime.connect();val ch=v2Supabase.realtime.channel("home-v2");val a=ch.postgresChangeFlow<PostgresAction.Insert>(schema="public"){table="messages"};val u=ch.postgresChangeFlow<PostgresAction.Update>(schema="public"){table="messages"};ch.subscribe();merge(a,u).collect{loadHome(true)}}catch(_:Exception){}}}
+ private fun start(e:EditText){val u=e.text.toString().trim().lowercase(Locale.ROOT);if(!u.matches(Regex("[a-z0-9_]{2,30}"))){e.error="نام کاربری معتبر نیست";return};scope.launch{try{val target=v2Supabase.from("profiles").select{filter{eq("username",u)}}.decodeSingleOrNull<V2Profile>()?:error("کاربر پیدا نشد");if(target.id==uid)error("گفتگو با خودت ممکن نیست");cid=withTimeout(10000){v2Supabase.postgrest.rpc("create_direct_conversation",V2Create(target.id)).decodeAs<String>()};other=target.username;chat()}catch(x:Exception){toast(x.message?:"خطا")}}}
+ private suspend fun loadHome(silent:Boolean=false){try{val data=withTimeout(10000){v2Supabase.postgrest.rpc("list_my_conversations").decodeList<V2Conversation>()};val l=rows?:return;l.removeAllViews();if(data.isEmpty()){l.addView(text("هنوز گفتگویی نداری",15f));return};data.forEach{c->val box=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(14,12,14,12);setBackgroundColor(Color.WHITE)};box.addView(text(c.other_display_name?.takeIf{it.isNotBlank()}?:c.other_username,17f,true));box.addView(text(c.last_message?.take(100)?:"بدون پیام",14f));if(c.unread_count>0)box.addView(text("خوانده‌نشده: ${c.unread_count}",12f,true));box.setOnClickListener{cid=c.conversation_id;other=c.other_username;chat()};l.addView(box,LinearLayout.LayoutParams(-1,-2).apply{setMargins(0,0,0,8)})}}catch(_:Exception){if(!silent)(rows)?.addView(text("بارگذاری ناموفق",14f))}}
+ private fun chat(){val id=cid?:return;chatJob?.cancel();poll?.cancel();val r=base();val top=LinearLayout(this);top.addView(button("‹").apply{setOnClickListener{home()}});top.addView(text(other,21f,true),LinearLayout.LayoutParams(0,-2,1f));r.addView(top);val sv=ScrollView(this);val l=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};sv.addView(l);r.addView(sv,LinearLayout.LayoutParams(-1,0,1f));rows=l;scroll=sv;val bar=LinearLayout(this);val msg=input("پیام...").apply{maxLines=4};val attach=button("📎");val send=button("ارسال");bar.addView(msg,LinearLayout.LayoutParams(0,-2,1f));bar.addView(attach);bar.addView(send);r.addView(bar);setContentView(r);attach.setOnClickListener{pickFile()};send.setOnClickListener{send(id,msg,send)};scope.launch{refresh(id)};chatJob=scope.launch{try{v2Supabase.realtime.connect();val ch=v2Supabase.realtime.channel("chat-v2-$id");val a=ch.postgresChangeFlow<PostgresAction.Insert>(schema="public"){table="messages"};val u=ch.postgresChangeFlow<PostgresAction.Update>(schema="public"){table="messages"};val d=ch.postgresChangeFlow<PostgresAction.Delete>(schema="public"){table="messages"};ch.subscribe();merge(a,u,d).collect{refresh(id)}}catch(_:Exception){}};poll=scope.launch{while(isActive){delay(6000);if(cid==id)refresh(id)}}}
+ private fun pickFile(){startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply{type="*/*";addCategory(Intent.CATEGORY_OPENABLE)},77)}
+ override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?){super.onActivityResult(requestCode,resultCode,data);if(requestCode!=77||resultCode!=RESULT_OK)return;val u=data?.data?:return;val name=displayName(u);val mime=contentResolver.getType(u)?:"application/octet-stream";scope.launch{try{val f=NCFeatureHelpers.copyUriToCache(this@NimChatV2Activity,u,name);pickedUri=u;pickedName=name;pickedMime=mime;toast("پیوست آماده ارسال: $name");sendAttachment(f)}catch(x:Exception){toast(x.message?:"فایل نامعتبر")}}}
+ private suspend fun sendAttachment(file:java.io.File){val id=uid?:return;val c=cid?:return;val path="$id/${UUID.randomUUID()}_${pickedName.replace(Regex("[^A-Za-z0-9._-]"),"_")}";withTimeout(30000){v2Supabase.storage.from("chat-files").upload(path,file.readBytes()){contentType=pickedMime;upsert=false}};withTimeout(10000){v2Supabase.from("messages").insert(V2Message(UUID.randomUUID().toString(),c,id,"",attachment_path=path,attachment_name=pickedName,attachment_mime=pickedMime,attachment_size=file.length()))};refresh(c);file.delete()}
+ private fun send(c:String,e:EditText,b:Button){val body=e.text.toString().trim();if(body.isEmpty()&&pickedUri==null)return;if(body.length>4000){e.error="حداکثر ۴۰۰۰ کاراکتر";return};b.isEnabled=false;scope.launch{try{val me=uid?:return@launch;v2Supabase.from("messages").insert(V2Message(UUID.randomUUID().toString(),c,me,body));e.text.clear();refresh(c)}catch(x:Exception){toast(x.message?:"ارسال ناموفق")}finally{b.isEnabled=true}}}
+ private suspend fun refresh(c:String){try{var ms=withTimeout(10000){v2Supabase.from("messages").select{filter{eq("conversation_id",c)};order("created_at",Order.ASCENDING)}.decodeList<V2Message>()};if(ms.any{it.sender_id!=uid&&it.read_at==null}){withTimeout(10000){v2Supabase.postgrest.rpc("mark_conversation_read",V2Read(c))};ms=withTimeout(10000){v2Supabase.from("messages").select{filter{eq("conversation_id",c)};order("created_at",Order.ASCENDING)}.decodeList<V2Message>()}};val l=rows?:return;l.removeAllViews();ms.forEach{addMessage(l,it)};scroll?.post{scroll?.fullScroll(View.FOCUS_DOWN)}}catch(_:Exception){}}
+ private fun addMessage(p:LinearLayout,m:V2Message){val mine=m.sender_id==uid;val box=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(12,8,12,8);setBackgroundColor(if(mine)Color.rgb(220,235,255)else Color.WHITE)};if(!m.body.isNullOrBlank())box.addView(text(m.body!!,16f));if(m.attachment_path!=null){val a=button("📎 ${m.attachment_name?:"پیوست"}");a.setOnClickListener{openAttachment(m)};box.addView(a);if(m.attachment_mime?.startsWith("image/")==true){val iv=ImageView(this);iv.adjustViewBounds=true;iv.maxHeight=500;box.addView(iv);scope.launch{try{val bytes=withContext(Dispatchers.IO){v2Supabase.storage.from("chat-files").downloadAuthenticated(m.attachment_path)};val bmp=BitmapFactory.decodeByteArray(bytes,0,bytes.size);iv.setImageBitmap(bmp)}catch(_:Exception){}}}};val meta=text(if(mine&&m.read_at!=null)"✓✓ خوانده شد" else "",10f);box.addView(meta);if(mine)box.setOnLongClickListener{actions(m);true};val row=LinearLayout(this).apply{gravity=if(mine)Gravity.END else Gravity.START};row.addView(box);p.addView(row,LinearLayout.LayoutParams(-1,-2).apply{setMargins(0,3,0,3)})}
+ private fun openAttachment(m:V2Message){scope.launch{try{val bytes=withContext(Dispatchers.IO){v2Supabase.storage.from("chat-files").downloadAuthenticated(m.attachment_path!!)};val f=java.io.File(cacheDir,"open_${m.attachment_name?:"file"}");f.writeBytes(bytes);val uri=androidx.core.content.FileProvider.getUriForFile(this@NimChatV2Activity,"${BuildConfig.APPLICATION_ID}.fileprovider",f);startActivity(Intent(Intent.ACTION_VIEW).apply{setDataAndType(uri,m.attachment_mime?:"*/*");addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)})}catch(x:Exception){toast("باز کردن فایل ناموفق")}}}
+ private fun actions(m:V2Message){val items=if(!m.body.isNullOrBlank())arrayOf("ویرایش پیام","حذف پیام","لغو")else arrayOf("حذف پیام","لغو");AlertDialog.Builder(this).setItems(items){_,which->if(!m.body.isNullOrBlank()&&which==0)edit(m) else if((!m.body.isNullOrBlank()&&which==1)||(m.body.isNullOrBlank()&&which==0))delete(m)}.show()}
+ private fun edit(m:V2Message){val e=input("متن جدید");e.setText(m.body);AlertDialog.Builder(this).setTitle("ویرایش پیام").setView(e).setNegativeButton("لغو",null).setPositiveButton("ذخیره"){_,_->scope.launch{try{v2Supabase.from("messages").update({set("body",e.text.toString().trim())}){filter{eq("id",m.id)}};cid?.let{refresh(it)}}catch(x:Exception){toast("ویرایش ناموفق")}}}.show()}
+ private fun delete(m:V2Message){AlertDialog.Builder(this).setTitle("حذف پیام").setMessage("پیام حذف شود؟").setNegativeButton("لغو",null).setPositiveButton("حذف"){_,_->scope.launch{try{v2Supabase.from("messages").delete{filter{eq("id",m.id)}};cid?.let{refresh(it)}}catch(_:Exception){toast("حذف ناموفق")}}}.show()}
+ private fun profile(){val e=input("نام نمایشی");e.setText(user);AlertDialog.Builder(this).setTitle("پروفایل").setView(e).setNegativeButton("لغو",null).setPositiveButton("ذخیره"){_,_->scope.launch{try{val id=uid?:return@launch;v2Supabase.from("profiles").update({set("display_name",e.text.toString().trim())}){filter{eq("id",id)}};home()}catch(_:Exception){toast("ذخیره ناموفق")}}}.show()}
+ private fun makeChannel(){if(Build.VERSION.SDK_INT>=26)getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(channel,"پیام‌ها",NotificationManager.IMPORTANCE_DEFAULT))}
+ private fun notifyIncoming(name:String){if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED){ActivityCompat.requestPermissions(this,arrayOf(Manifest.permission.POST_NOTIFICATIONS),901);return};val n=NotificationCompat.Builder(this,channel).setSmallIcon(android.R.drawable.ic_dialog_email).setContentTitle(name).setContentText("پیام جدید در NimChat").setAutoCancel(true).build();NotificationManagerCompat.from(this).notify((System.currentTimeMillis()%100000).toInt(),n)}
+ private fun displayName(uri:Uri):String{var n="attachment";contentResolver.query(uri,arrayOf(OpenableColumns.DISPLAY_NAME),null,null,null)?.use{if(it.moveToFirst())n=it.getString(0)};return n}
+ private fun toast(s:String)=Toast.makeText(this,s,Toast.LENGTH_LONG).show()
+}
