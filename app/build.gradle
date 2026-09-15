@@ -29,6 +29,10 @@ android {
     kotlinOptions { jvmTarget = '17' }
 }
 
+configurations.configureEach {
+    resolutionStrategy.force 'androidx.browser:browser:1.8.0'
+}
+
 dependencies {
     implementation 'androidx.core:core-ktx:1.15.0'
     implementation 'io.github.jan-tennert.supabase:postgrest-kt:3.8.0'
