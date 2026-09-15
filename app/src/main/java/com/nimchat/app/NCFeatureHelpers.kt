@@ -5,6 +5,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import java.io.File
 import java.io.RandomAccessFile
+import java.util.concurrent.ConcurrentHashMap
 
 object NCFeatureHelpers {
     const val MAX_PHOTO_BYTES = 100L * 1024L * 1024L
@@ -12,6 +13,7 @@ object NCFeatureHelpers {
     const val MAX_PREMIUM_BYTES = 20L * 1024L * 1024L * 1024L
     const val MAX_ATTACHMENT_BYTES = MAX_STANDARD_BYTES
     private const val SOURCE_PREFS = "nimchat_attachment_sources"
+    private val sourceUris = ConcurrentHashMap<String, Uri>()
 
     fun maxAttachmentBytes(mime: String?, premium: Boolean): Long =
         if (mime.orEmpty().startsWith("image/")) MAX_PHOTO_BYTES
@@ -23,10 +25,7 @@ object NCFeatureHelpers {
         require(size <= maxAttachmentBytes(mime, premium)) { "حجم فایل از سقف مجاز بیشتر است" }
     }
 
-    /**
-     * Registers the source Uri and creates only a sparse metadata file. The file contents are
-     * never copied to cache; the resumable storage client streams directly from the Uri.
-     */
+    /** Registers the source and creates only a sparse metadata file; payload bytes are not copied. */
     fun copyUriToCache(context: Context, uri: Uri, name: String, mime: String? = null, premium: Boolean = false): File {
         val size = querySize(context, uri) ?: error("حجم فایل قابل تشخیص نیست")
         validateAttachmentSize(size, mime, premium)
@@ -35,6 +34,7 @@ object NCFeatureHelpers {
         try {
             file.parentFile?.mkdirs()
             RandomAccessFile(file, "rw").use { it.setLength(size) }
+            sourceUris[file.absolutePath] = uri
             context.getSharedPreferences(SOURCE_PREFS, Context.MODE_PRIVATE)
                 .edit().putString(file.absolutePath, uri.toString()).apply()
             runCatching {
@@ -49,10 +49,12 @@ object NCFeatureHelpers {
     }
 
     fun sourceUri(context: Context, metadataFile: File): Uri? =
-        context.getSharedPreferences(SOURCE_PREFS, Context.MODE_PRIVATE)
-            .getString(metadataFile.absolutePath, null)?.let(Uri::parse)
+        sourceUris[metadataFile.absolutePath]
+            ?: context.getSharedPreferences(SOURCE_PREFS, Context.MODE_PRIVATE)
+                .getString(metadataFile.absolutePath, null)?.let(Uri::parse)
 
     fun clearSource(context: Context, metadataFile: File) {
+        sourceUris.remove(metadataFile.absolutePath)
         context.getSharedPreferences(SOURCE_PREFS, Context.MODE_PRIVATE)
             .edit().remove(metadataFile.absolutePath).apply()
     }
