@@ -13,6 +13,7 @@ import io.github.jan.supabase.realtime.RealtimeChannel
 import io.github.jan.supabase.realtime.channel as officialChannel
 import io.github.jan.supabase.realtime.postgresChangeFlow as officialPostgresChangeFlow
 import io.github.jan.supabase.realtime.realtime as officialRealtime
+import io.github.jan.supabase.storage.Storage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -53,6 +54,9 @@ val SupabaseClient.postgrest: NimChatPostgrest
 
 val SupabaseClient.realtime: NimChatRealtime
     get() = NimChatRealtime(this.officialRealtime)
+
+val SupabaseClient.storage: Storage
+    get() = pluginManager.getPlugin(Storage)
 
 inline fun <reified T : PostgresAction> RealtimeChannel.postgresChangeFlow(
     schema: String,
