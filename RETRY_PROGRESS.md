@@ -1,0 +1,1 @@
+Retry groundwork added: typed failed-message model plus deterministic retry contract tests. UI wiring remains intentionally gated until the main activity can be edited atomically without replacing the stable implementation.
