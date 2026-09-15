@@ -4,15 +4,23 @@ import android.content.SharedPreferences
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
-class NCOutbox(private val prefs: SharedPreferences) {
+object NCOutboxCodec {
     private val json = Json { ignoreUnknownKeys = true }
+    private val serializer = ListSerializer(NCFailedMessage.serializer())
+
+    fun encode(messages: List<NCFailedMessage>): String =
+        json.encodeToString(serializer, messages)
+
+    fun decode(raw: String?): List<NCFailedMessage> = runCatching {
+        if (raw.isNullOrBlank()) emptyList() else json.decodeFromString(serializer, raw)
+    }.getOrDefault(emptyList())
+}
+
+class NCOutbox(private val prefs: SharedPreferences) {
     private val key = "pending_failed_messages"
 
     @Synchronized
-    fun load(): List<NCFailedMessage> = runCatching {
-        val raw = prefs.getString(key, null) ?: return emptyList()
-        json.decodeFromString(ListSerializer(NCFailedMessage.serializer()), raw)
-    }.getOrDefault(emptyList())
+    fun load(): List<NCFailedMessage> = NCOutboxCodec.decode(prefs.getString(key, null))
 
     @Synchronized
     fun loadForConversation(conversationId: String): List<NCFailedMessage> =
@@ -21,16 +29,12 @@ class NCOutbox(private val prefs: SharedPreferences) {
     @Synchronized
     fun save(message: NCFailedMessage) {
         val next = load().filterNot { it.id == message.id } + message
-        prefs.edit()
-            .putString(key, json.encodeToString(ListSerializer(NCFailedMessage.serializer()), next))
-            .apply()
+        prefs.edit().putString(key, NCOutboxCodec.encode(next)).apply()
     }
 
     @Synchronized
     fun remove(id: String) {
         val next = load().filterNot { it.id == id }
-        prefs.edit()
-            .putString(key, json.encodeToString(ListSerializer(NCFailedMessage.serializer()), next))
-            .apply()
+        prefs.edit().putString(key, NCOutboxCodec.encode(next)).apply()
     }
 }
