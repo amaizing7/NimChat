@@ -1,16 +1,19 @@
 package com.nimchat.app
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class NCFeatureHelpersLargeFileTest {
-    @Test fun standardLimitIs4GiB() {
+    @Test fun allUsersFileLimitIs4GiB() {
         assertEquals(4L * 1024L * 1024L * 1024L, NCFeatureHelpers.MAX_STANDARD_BYTES)
-    }
-
-    @Test fun premiumLimitIs20GiB() {
-        assertEquals(20L * 1024L * 1024L * 1024L, NCFeatureHelpers.MAX_PREMIUM_BYTES)
+        assertEquals(
+            NCFeatureHelpers.MAX_STANDARD_BYTES,
+            NCFeatureHelpers.maxAttachmentBytes("application/zip", false)
+        )
+        assertEquals(
+            NCFeatureHelpers.MAX_STANDARD_BYTES,
+            NCFeatureHelpers.maxAttachmentBytes("application/zip", true)
+        )
     }
 
     @Test fun imageLimitIs100MiB() {
@@ -21,13 +24,8 @@ class NCFeatureHelpersLargeFileTest {
         NCFeatureHelpers.validateAttachmentSize(NCFeatureHelpers.MAX_STANDARD_BYTES, "video/mp4", false)
     }
 
-    @Test fun standardVideoAboveLimitIsRejected() {
-        assertThrows(IllegalArgumentException::class.java) {
-            NCFeatureHelpers.validateAttachmentSize(NCFeatureHelpers.MAX_STANDARD_BYTES + 1, "video/mp4", false)
-        }
-    }
-
-    @Test fun premiumFileAt20GiBIsAccepted() {
-        NCFeatureHelpers.validateAttachmentSize(NCFeatureHelpers.MAX_PREMIUM_BYTES, "application/zip", true)
+    @Test(expected = IllegalArgumentException::class)
+    fun standardVideoAboveLimitIsRejected() {
+        NCFeatureHelpers.validateAttachmentSize(NCFeatureHelpers.MAX_STANDARD_BYTES + 1, "video/mp4", false)
     }
 }
