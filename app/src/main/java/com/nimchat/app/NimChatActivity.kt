@@ -88,6 +88,7 @@ class NimChatActivity : Activity() {
     private var cachedConversations: List<NCConversation> = emptyList()
     private val pickFile = 1001
     private val channelId = "nimchat_messages"
+    private val failedOutgoing = linkedMapOf<String, NCFailedMessage>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -356,17 +357,62 @@ class NimChatActivity : Activity() {
         if (body.length > 4000) { input.error = "حداکثر ۴۰۰۰ کاراکتر"; return }
         button.isEnabled = false
         scope.launch {
+            val me = uid
+            if (me == null) {
+                button.isEnabled = true
+                Toast.makeText(this@NimChatActivity, "جلسه وجود ندارد", Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            val id = UUID.randomUUID().toString()
+            val message = NCMessage(id = id, conversation_id = cid, sender_id = me, body = body)
             try {
-                val me = uid ?: error("جلسه وجود ندارد")
-                withTimeout(10000) {
-                    ncSupabase.from("messages").insert(NCMessage(conversation_id = cid, sender_id = me, body = body))
-                }
+                sendOutgoing(message)
                 input.text.clear()
+                failedOutgoing.remove(id)
                 refreshMessages(cid)
             } catch (e: Exception) {
-                Toast.makeText(this@NimChatActivity, "ارسال ناموفق: ${friendly(e)}", Toast.LENGTH_LONG).show()
+                failedOutgoing[id] = NCFailedMessage(id, cid, me, body, friendly(e))
+                refreshMessages(cid)
+                Toast.makeText(this@NimChatActivity, "ارسال ناموفق؛ از دکمه تلاش مجدد استفاده کن", Toast.LENGTH_LONG).show()
             } finally {
                 button.isEnabled = true
+            }
+        }
+    }
+
+    private suspend fun sendOutgoing(message: NCMessage) {
+        try {
+            withTimeout(10000) { ncSupabase.from("messages").insert(message) }
+        } catch (first: Exception) {
+            // A timeout can happen after Supabase committed the row. Check by the
+            // client-generated id before marking the message as failed.
+            val existing = try {
+                withTimeout(5000) {
+                    ncSupabase.from("messages").select { filter { eq("id", message.id ?: "") } }
+                        .decodeSingleOrNull<NCMessage>()
+                }
+            } catch (_: Exception) { null }
+            if (existing?.id == message.id) return
+            throw first
+        }
+    }
+
+    private fun retryFailedMessage(failed: NCFailedMessage) {
+        if (!NimChatRetry.shouldRetry(failed, activeCid ?: return)) return
+        val current = failedOutgoing[failed.id] ?: return
+        scope.launch {
+            val button = list?.findViewWithTag<Button>("retry-${failed.id}")
+            button?.isEnabled = false
+            try {
+                val me = uid ?: error("جلسه وجود ندارد")
+                sendOutgoing(NCMessage(id = current.id, conversation_id = current.conversation_id, sender_id = me, body = current.body))
+                failedOutgoing.remove(current.id)
+                refreshMessages(current.conversation_id)
+                Toast.makeText(this@NimChatActivity, "پیام با موفقیت ارسال شد", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                failedOutgoing[current.id] = current.copy(error = friendly(e))
+                refreshMessages(current.conversation_id)
+                Toast.makeText(this@NimChatActivity, "تلاش مجدد ناموفق بود", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -405,8 +451,28 @@ class NimChatActivity : Activity() {
             val container = list ?: return
             container.removeAllViews()
             messages.forEach { addMessage(container, it) }
+            failedOutgoing.values
+                .filter { NimChatRetry.shouldRetry(it, cid) }
+                .forEach { addFailedMessage(container, it) }
             scroll?.post { scroll?.fullScroll(View.FOCUS_DOWN) }
         } catch (_: Exception) {}
+    }
+
+    private fun addFailedMessage(parent: LinearLayout, failed: NCFailedMessage) {
+        val row = LinearLayout(this).apply { gravity = Gravity.END; setPadding(4, 4, 4, 4) }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(15, 9, 15, 8)
+            setBackgroundColor(Color.rgb(255, 235, 235))
+        }
+        box.addView(t(failed.body, 16f))
+        box.addView(t("ارسال نشد: ${failed.error}", 11f).apply { setTextColor(Color.rgb(170, 40, 40)) }, lp(-1, 3, 0))
+        val retry = btn("تلاش مجدد")
+        retry.tag = "retry-${failed.id}"
+        retry.setOnClickListener { retryFailedMessage(failed) }
+        box.addView(retry, lp(-1, 5, 0))
+        row.addView(box, LinearLayout.LayoutParams(-2, -2))
+        parent.addView(row)
     }
 
     private fun addMessage(parent: LinearLayout, message: NCMessage) {
