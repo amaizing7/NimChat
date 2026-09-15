@@ -94,3 +94,5 @@ jobs:
           git add app/src/main/java/com/nimchat/app/NimChatActivity.kt
           git diff --cached --quiet || git commit -m 'Optimize chat realtime subscriptions [realtime-optimized]'
           git push
+
+# Trigger the one-time source transformation after workflow installation.
