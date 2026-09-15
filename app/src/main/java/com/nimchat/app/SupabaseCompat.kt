@@ -33,6 +33,9 @@ class NimChatPostgrest(private val delegate: Postgrest) {
 class NimChatRealtime(private val delegate: Realtime) {
     suspend fun connect() = delegate.connect()
     fun channel(id: String): RealtimeChannel = delegate.officialChannel(id)
+    fun removeChannel(channel: RealtimeChannel) {
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { delegate.removeChannel(channel) }
+    }
     fun removeAllChannels() {
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { delegate.removeAllChannels() }
     }
