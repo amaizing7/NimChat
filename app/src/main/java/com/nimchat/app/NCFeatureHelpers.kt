@@ -19,9 +19,19 @@ object NCFeatureHelpers {
     fun maxAttachmentBytes(mime: String?): Long =
         if (mime.orEmpty().startsWith("image/")) MAX_PHOTO_BYTES else MAX_STANDARD_BYTES
 
+    /** Compatibility overload: the premium flag is intentionally ignored. */
+    @Deprecated("Attachment limits are universal; premium does not change the limit")
+    fun maxAttachmentBytes(mime: String?, premium: Boolean): Long = maxAttachmentBytes(mime)
+
     fun validateAttachmentSize(size: Long, mime: String? = null) {
         require(size >= 0) { "حجم فایل نامعتبر است" }
         require(size <= maxAttachmentBytes(mime)) { "حجم فایل از سقف مجاز بیشتر است" }
+    }
+
+    /** Compatibility overload: the premium flag is intentionally ignored. */
+    @Deprecated("Attachment limits are universal; premium does not change the limit")
+    fun validateAttachmentSize(size: Long, mime: String?, premium: Boolean) {
+        validateAttachmentSize(size, mime)
     }
 
     /** Registers the source and creates only a sparse metadata file; payload bytes are not copied. */
@@ -47,6 +57,11 @@ object NCFeatureHelpers {
             throw e
         }
     }
+
+    /** Compatibility overload: the premium flag is intentionally ignored. */
+    @Deprecated("Attachment limits are universal; premium does not change the limit")
+    fun copyUriToCache(context: Context, uri: Uri, name: String, mime: String?, premium: Boolean): File =
+        copyUriToCache(context, uri, name, mime)
 
     fun sourceUri(metadataFile: File): Uri? {
         val context = appContext
