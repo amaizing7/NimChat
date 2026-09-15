@@ -10,16 +10,14 @@ import java.util.concurrent.ConcurrentHashMap
 object NCFeatureHelpers {
     const val MAX_PHOTO_BYTES = 100L * 1024L * 1024L
     const val MAX_STANDARD_BYTES = 4L * 1024L * 1024L * 1024L
-    const val MAX_PREMIUM_BYTES = 20L * 1024L * 1024L * 1024L
     const val MAX_ATTACHMENT_BYTES = MAX_STANDARD_BYTES
     private const val SOURCE_PREFS = "nimchat_attachment_sources"
     private val sourceUris = ConcurrentHashMap<String, Uri>()
     @Volatile private var appContext: Context? = null
 
-    fun maxAttachmentBytes(mime: String?, premium: Boolean): Long =
-        if (mime.orEmpty().startsWith("image/")) MAX_PHOTO_BYTES
-        else if (premium) MAX_PREMIUM_BYTES
-        else MAX_STANDARD_BYTES
+    /** All non-image files use the same 4 GiB limit for every user. */
+    fun maxAttachmentBytes(mime: String?, premium: Boolean = false): Long =
+        if (mime.orEmpty().startsWith("image/")) MAX_PHOTO_BYTES else MAX_STANDARD_BYTES
 
     fun validateAttachmentSize(size: Long, mime: String? = null, premium: Boolean = false) {
         require(size >= 0) { "حجم فایل نامعتبر است" }
